@@ -70,16 +70,17 @@ const globalDatabase = globalThis as typeof globalThis & {
 export function database() {
   if (globalDatabase.stablecountDatabase) return globalDatabase.stablecountDatabase;
 
-  const url = process.env.TURSO_DATABASE_URL || "file:stablecount.db";
-  if (process.env.VERCEL && !process.env.TURSO_DATABASE_URL) {
+  const hostedUrl = process.env.TURSO_DATABASE_URL || process.env.Stable_TURSO_DATABASE_URL;
+  const hostedToken = process.env.TURSO_AUTH_TOKEN || process.env.Stable_TURSO_AUTH_TOKEN;
+  const url = hostedUrl || "file:stablecount.db";
+  if (process.env.VERCEL && !hostedUrl) {
     throw new Error("TURSO_DATABASE_URL is not configured");
   }
 
   const client = createClient({
     url,
-    authToken: process.env.TURSO_AUTH_TOKEN || undefined,
+    authToken: hostedToken || undefined,
   });
   globalDatabase.stablecountDatabase = new StablecountDatabase(client);
   return globalDatabase.stablecountDatabase;
 }
-
