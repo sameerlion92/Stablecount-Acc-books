@@ -20,7 +20,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const image = `${protocol}://${host}/og.png`;
   const title = "Stablecount Acc-books — Global operations & accounting";
   const description = "Automated bookkeeping, invoicing, client records, orders, shipments and financial reporting in one workspace.";
-  return { title, description, icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" }, openGraph: { title, description, images: [{ url: image, width: 1731, height: 909, alt: "Stablecount Acc-books product overview" }] }, twitter: { card: "summary_large_image", title, description, images: [image] } };
+  return { title, description, icons: { icon: "/favicon.png", shortcut: "/favicon.png", apple: "/favicon.png" }, openGraph: { title, description, images: [{ url: image, width: 1731, height: 909, alt: "Stablecount Acc-books product overview" }] }, twitter: { card: "summary_large_image", title, description, images: [image] } };
 }
 
 export default function RootLayout({
