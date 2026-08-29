@@ -10,10 +10,12 @@ export default async function ResetPasswordPage({ searchParams }: { searchParams
   if (!token) redirect("/login/forgot");
   return <main className="login-page">
     <section className="login-card">
-      <img src="/stablecount-logo.svg" alt="StableCount" className="login-logo" />
-      <p className="eyebrow">Stablecount Acc-books</p>
+    <div className="brand-card login-brand">
+      <img src="/stablecount-logo.png" alt="StableCount" />
+      <p className="brand-product">Acc-books</p>
+    </div>
       <h1>Choose a new password</h1>
-      <p>Your reset link expires after one hour. Choose a password with at least 10 characters.</p>
+      <p>Use the secure link from your email to choose a new password. Reset links expire after one hour.</p>
       {error && <div className="login-error">{error}</div>}
       <form action="/api/auth/reset-password" method="post" className="login-form">
         <input type="hidden" name="token" value={token} />

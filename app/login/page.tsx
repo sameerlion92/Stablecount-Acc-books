@@ -10,8 +10,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const { error, reset } = await searchParams;
   return <main className="login-page">
     <section className="login-card">
-      <img src="/stablecount-logo.svg" alt="StableCount" className="login-logo" />
-      <p className="eyebrow">Stablecount Acc-books</p>
+    <div className="brand-card login-brand">
+      <img src="/stablecount-logo.png" alt="StableCount" />
+      <p className="brand-product">Acc-books</p>
+    </div>
       <h1>{registered ? "Sign in to your workspace" : "Create the Super Admin"}</h1>
       <p>{registered ? "Use the email assigned to your Stablecount user seat." : "This first account receives full control and can create the remaining nine user seats."}</p>
       {reset === "1" && <div className="login-success">Your password was updated. Sign in with your new password.</div>}
@@ -24,7 +26,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <button type="submit">{registered ? "Sign in" : "Create Super Admin"}</button>
       </form>
       {!registered && <p className="login-links"><Link href="/login/forgot">Already have a seat? Reset your password</Link></p>}
-      <small>Passwords require at least 10 characters. Invited users set their password the first time they sign in.</small>
+      <small>Passwords require at least 10 characters. Forgot your password? Use the reset link and we will email the address linked to your seat.</small>
     </section>
   </main>;
 }

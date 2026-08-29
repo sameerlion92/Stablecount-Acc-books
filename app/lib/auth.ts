@@ -1,7 +1,9 @@
 import { compare, hash } from "bcryptjs";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
+import { logAudit } from "./audit";
 import { database } from "./database";
+import { sendPasswordResetEmail } from "./mail";
 
 const SESSION_COOKIE = "stablecount_session";
 const SESSION_DAYS = 14;
@@ -55,6 +57,18 @@ export async function ensureAuthSchema() {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`).run();
   await db.prepare("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash)").run();
+  await db.prepare(`CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES app_users(id),
+    action TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`).run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at)").run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id)").run();
   const brokenPlatformIds = await db.prepare("SELECT id FROM app_users WHERE platform_user_id IS NULL OR platform_user_id='null'").all();
   for (const row of brokenPlatformIds.results as Array<{ id: number }>) {
     await db.prepare("UPDATE app_users SET platform_user_id=? WHERE id=?").bind(platformUserId(), row.id).run();
@@ -103,6 +117,7 @@ export async function signInWithPassword(input: { email: string; password: strin
       (platform_user_id,email,display_name,password_hash,role,status,last_seen_at)
       VALUES (?,?,?,?, 'super_admin','active',CURRENT_TIMESTAMP)
       RETURNING id,email,display_name,password_hash,status`).bind(`vercel:${randomUUID()}`, email, displayName, passwordHash).first<Record<string, unknown>>();
+    if (user) await logAudit(Number(user.id), "activated", "user", Number(user.id), `${displayName} created the Super Admin account`, { email, role: "super_admin" });
   } else {
     if (!user) throw new Error("This email does not have a Stablecount user seat");
     if (user.status === "disabled") throw new Error("This user seat has been disabled");
@@ -113,6 +128,7 @@ export async function signInWithPassword(input: { email: string; password: strin
       await db.prepare("UPDATE app_users SET password_hash=?,platform_user_id=?,status='active',last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(passwordHash, nextPlatformUserId, user.id).run();
       user.password_hash = passwordHash;
       user.platform_user_id = nextPlatformUserId;
+      await logAudit(Number(user.id), "activated", "user", Number(user.id), `${String(user.display_name)} completed password setup and signed in`, { email });
     } else if (!(await compare(password, String(user.password_hash)))) {
       throw new Error("Incorrect email or password");
     } else if (!user.platform_user_id || user.platform_user_id === "null") {
@@ -128,6 +144,7 @@ export async function signInWithPassword(input: { email: string; password: strin
   await db.prepare("DELETE FROM app_sessions WHERE expires_at<=CURRENT_TIMESTAMP").run();
   await db.prepare("INSERT INTO app_sessions (user_id,token_hash,expires_at) VALUES (?,?,?)").bind(user.id, digest(token), expiresAt.toISOString()).run();
   await db.prepare("UPDATE app_users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(user.id).run();
+  await logAudit(Number(user.id), "signed in", "session", Number(user.id), `${String(user.display_name)} signed in`, { email });
   (await cookies()).set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
@@ -142,7 +159,10 @@ export async function signOut() {
   const token = store.get(SESSION_COOKIE)?.value;
   if (token) {
     await ensureAuthSchema();
-    await database().prepare("DELETE FROM app_sessions WHERE token_hash=?").bind(digest(token)).run();
+    const db = database();
+    const row = await db.prepare(`SELECT u.id,u.display_name FROM app_sessions s JOIN app_users u ON u.id=s.user_id WHERE s.token_hash=? LIMIT 1`).bind(digest(token)).first<{ id: number; display_name: string }>();
+    await db.prepare("DELETE FROM app_sessions WHERE token_hash=?").bind(digest(token)).run();
+    if (row) await logAudit(row.id, "signed out", "session", row.id, `${row.display_name} signed out`, {});
   }
   store.delete(SESSION_COOKIE);
 }
@@ -152,16 +172,32 @@ export async function requestPasswordReset(email: string) {
   const normalized = email.trim().toLowerCase();
   if (!/^\S+@\S+\.\S+$/.test(normalized)) throw new Error("Enter a valid email address");
 
-  const user = await database().prepare("SELECT id,status,password_hash FROM app_users WHERE lower(email)=? LIMIT 1").bind(normalized).first<Record<string, unknown>>();
+  const user = await database().prepare("SELECT id,email,display_name,status FROM app_users WHERE lower(email)=? LIMIT 1").bind(normalized).first<Record<string, unknown>>();
   if (!user || user.status === "disabled") return null;
-  if (!user.password_hash) throw new Error("This account has not finished password setup yet. Sign in and choose a password.");
 
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + RESET_HOURS * 3600000);
   const db = database();
   await db.prepare("DELETE FROM password_reset_tokens WHERE user_id=? OR expires_at<=CURRENT_TIMESTAMP").bind(user.id).run();
   await db.prepare("INSERT INTO password_reset_tokens (user_id,token_hash,expires_at) VALUES (?,?,?)").bind(user.id, digest(token), expiresAt.toISOString()).run();
-  return token;
+  await logAudit(Number(user.id), "requested", "password-reset", Number(user.id), `Password reset requested for ${normalized}`, { email: normalized });
+  return {
+    token,
+    email: String(user.email),
+    displayName: String(user.display_name),
+  };
+}
+
+export async function deliverPasswordReset(email: string, origin: string) {
+  const reset = await requestPasswordReset(email);
+  if (!reset) return false;
+  const resetUrl = `${origin.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(reset.token)}`;
+  await sendPasswordResetEmail({
+    to: reset.email,
+    displayName: reset.displayName,
+    resetUrl,
+  });
+  return true;
 }
 
 export async function resetPasswordWithToken(input: { token: string; password: string }) {
@@ -179,6 +215,17 @@ export async function resetPasswordWithToken(input: { token: string; password: s
   await db.prepare("UPDATE app_users SET password_hash=?,status='active',last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(passwordHash, row.user_id).run();
   await db.prepare("DELETE FROM password_reset_tokens WHERE user_id=?").bind(row.user_id).run();
   await db.prepare("DELETE FROM app_sessions WHERE user_id=?").bind(row.user_id).run();
+  await logAudit(Number(row.user_id), "password reset", "security", Number(row.user_id), `${String(row.display_name)} reset their password`, { email: String(row.email) });
+}
+
+export async function setUserPassword(userId: number, newPassword: string) {
+  await ensureAuthSchema();
+  if (newPassword.length < 10) throw new Error("Password must be at least 10 characters");
+  const passwordHash = await hash(newPassword, 12);
+  const db = database();
+  await db.prepare("UPDATE app_users SET password_hash=?,status='active',last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(passwordHash, userId).run();
+  await db.prepare("DELETE FROM app_sessions WHERE user_id=?").bind(userId).run();
+  await db.prepare("DELETE FROM password_reset_tokens WHERE user_id=?").bind(userId).run();
 }
 
 export async function clearUserPassword(userId: number) {
@@ -187,5 +234,16 @@ export async function clearUserPassword(userId: number) {
   await db.prepare("UPDATE app_users SET password_hash=NULL,status='invited',platform_user_id=NULL WHERE id=?").bind(userId).run();
   await db.prepare("DELETE FROM app_sessions WHERE user_id=?").bind(userId).run();
   await db.prepare("DELETE FROM password_reset_tokens WHERE user_id=?").bind(userId).run();
+}
+
+export async function changePassword(userId: number, currentPassword: string, newPassword: string) {
+  await ensureAuthSchema();
+  if (newPassword.length < 10) throw new Error("Password must be at least 10 characters");
+  const db = database();
+  const row = await db.prepare("SELECT password_hash FROM app_users WHERE id=?").bind(userId).first<{ password_hash: string | null }>();
+  if (!row?.password_hash) throw new Error("Password sign-in is not configured for this account");
+  if (!(await compare(currentPassword, row.password_hash))) throw new Error("Current password is incorrect");
+  const passwordHash = await hash(newPassword, 12);
+  await db.prepare("UPDATE app_users SET password_hash=? WHERE id=?").bind(passwordHash, userId).run();
 }
 

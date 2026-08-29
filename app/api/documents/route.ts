@@ -1,4 +1,5 @@
-import { del, get, put } from "@vercel/blob";
+import { logAudit } from "../../lib/audit";
+import { deleteObject, getObject, putObject } from "../../lib/storage";
 import { audit, authenticate, database, prepareDatabase } from "../workspace/route";
 
 export const runtime = "nodejs";
@@ -7,15 +8,16 @@ export const maxDuration = 60;
 export async function GET(request: Request) {
   try {
     await prepareDatabase();
-    await authenticate(request);
+    const actor = await authenticate(request);
     const url = new URL(request.url);
     const id = Number(url.searchParams.get("id"));
     const wantsInline = url.searchParams.get("view") === "1";
     const row = await database().prepare("SELECT object_key,file_name,content_type FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
     if (!row) return Response.json({ error: "Document not found" }, { status: 404 });
-    const object = await get(String(row.object_key), { access: "private" });
+    await logAudit(actor.id, wantsInline ? "viewed" : "downloaded", "document", id, `${actor.displayName} ${wantsInline ? "viewed" : "downloaded"} ${row.file_name}`, { fileName: row.file_name, mode: wantsInline ? "inline" : "download" });
+    const object = await getObject(String(row.object_key));
     if (!object) return Response.json({ error: "Stored file not found" }, { status: 404 });
-    const contentType = String(row.content_type || "application/octet-stream");
+    const contentType = String(row.content_type || object.contentType || "application/octet-stream");
     const canViewInline = /^(application\/pdf|image\/|text\/plain)/i.test(contentType);
     const disposition = wantsInline && canViewInline ? "inline" : "attachment";
     return new Response(object.stream, { headers: { "content-type": contentType, "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(String(row.file_name))}`, "cache-control": "private, no-store", "x-content-type-options": "nosniff" } });
@@ -44,12 +46,12 @@ export async function POST(request: Request) {
     for(const file of uploadedFiles){
       const safeName=file.name.replace(/[^a-zA-Z0-9._-]+/g,"-").slice(-120)||"document";
       const key=`documents/${new Date().toISOString().slice(0,10)}/${crypto.randomUUID()}-${safeName}`;
-      const blob=await put(key,file,{access:"private",addRandomSuffix:false,contentType:file.type||"application/octet-stream"});
+      const blob=await putObject(key,file,file.type||"application/octet-stream");
       try{
         const row=await database().prepare("INSERT INTO documents (client_id,order_id,file_name,object_key,content_type,size,category,status,created_by) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id").bind(form.get("clientId")?Number(form.get("clientId")):null,form.get("orderId")?Number(form.get("orderId")):null,file.name,blob.url,file.type||"application/octet-stream",file.size,String(form.get("category")||"Other"),"Uploaded",actor.id).first<{id:number}>();
         if(!row)throw new Error("Document record could not be created");ids.push(row.id);
         await audit(actor,"uploaded","document",row.id,`${actor.displayName} uploaded ${file.name}`,{fileName:file.name,size:file.size,category:form.get("category"),clientId:form.get("clientId"),orderId:form.get("orderId")});
-      }catch(error){await del(blob.url);throw error;}
+      }catch(error){await deleteObject(blob.url);throw error;}
     }
     return Response.json({ids},{status:201});
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to save document" }, { status:400 }); }
@@ -63,7 +65,7 @@ export async function DELETE(request: Request) {
     const id=Number(new URL(request.url).searchParams.get("id"));
     const row=await database().prepare("SELECT object_key,file_name FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
     if(!row)throw new Error("Document not found");
-    await del(String(row.object_key));
+    await deleteObject(String(row.object_key));
     await database().prepare("DELETE FROM documents WHERE id=?").bind(id).run();
     await audit(actor,"deleted","document",id,`${actor.displayName} deleted ${row.file_name}`,{fileName:row.file_name});
     return Response.json({ok:true});
