@@ -65,7 +65,6 @@ export async function prepareDatabase() {
   const invoiceAdditions=["template_id INTEGER REFERENCES invoice_templates(id)","tax_rate REAL NOT NULL DEFAULT 0","tax_amount REAL NOT NULL DEFAULT 0","discount_amount REAL NOT NULL DEFAULT 0","shipping_amount REAL NOT NULL DEFAULT 0","reference TEXT NOT NULL DEFAULT ''","template_snapshot TEXT NOT NULL DEFAULT '{}'"];
   for(const addition of invoiceAdditions){const name=addition.split(" ")[0];if(!invoiceColumnNames.has(name))await db.prepare(`ALTER TABLE invoices ADD COLUMN ${addition}`).run();}
   await db.batch([db.prepare("CREATE INDEX IF NOT EXISTS idx_orders_supplier_id ON orders(supplier_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_order_id ON documents(order_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_invoices_order_id ON invoices(order_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_invoice_templates_active ON invoice_templates(is_active,direction)")]);
-  await db.prepare("PRAGMA optimize").run();
   const row = await db.prepare("SELECT COUNT(*) AS count FROM clients").first<{ count: number }>();
   if (Number(row?.count ?? 0) > 0) return;
   await db.batch([
