@@ -1,5 +1,5 @@
-import { env } from "cloudflare:workers";
-import { getChatGPTUser } from "../../chatgpt-auth";
+import { getSessionIdentity } from "../../lib/auth";
+import { database as vercelDatabase } from "../../lib/database";
 
 type Payload = Record<string, unknown> & { action?: string };
 export type Actor = { id: number; platformUserId: string; email: string; displayName: string; role: "super_admin"|"manager"|"operator"; status: string; language:string; defaultView:string; dateFormat:string; compactMode:boolean };
@@ -38,8 +38,7 @@ const schemaStatements = [
 ];
 
 export function database() {
-  if (!env.DB) throw new Error("Database binding is unavailable");
-  return env.DB;
+  return vercelDatabase();
 }
 
 export async function prepareDatabase() {
@@ -59,7 +58,7 @@ export async function prepareDatabase() {
   if(!documentColumns.results.some(column=>String((column as Record<string,unknown>).name)==="order_id"))await db.prepare("ALTER TABLE documents ADD COLUMN order_id INTEGER REFERENCES orders(id)").run();
   const userColumns=await db.prepare("PRAGMA table_info(app_users)").all();
   const userColumnNames=new Set(userColumns.results.map(column=>String((column as Record<string,unknown>).name)));
-  const userAdditions=["language TEXT NOT NULL DEFAULT 'en'","default_view TEXT NOT NULL DEFAULT 'overview'","date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY'","compact_mode INTEGER NOT NULL DEFAULT 0"];
+  const userAdditions=["password_hash TEXT","language TEXT NOT NULL DEFAULT 'en'","default_view TEXT NOT NULL DEFAULT 'overview'","date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY'","compact_mode INTEGER NOT NULL DEFAULT 0"];
   for(const addition of userAdditions){const name=addition.split(" ")[0];if(!userColumnNames.has(name))await db.prepare(`ALTER TABLE app_users ADD COLUMN ${addition}`).run();}
   const invoiceColumns=await db.prepare("PRAGMA table_info(invoices)").all();
   const invoiceColumnNames=new Set(invoiceColumns.results.map(column=>String((column as Record<string,unknown>).name)));
@@ -101,9 +100,8 @@ export async function prepareDatabase() {
 }
 
 export async function authenticate(request: Request): Promise<Actor> {
-  const supplied = await getChatGPTUser();
-  const local = new URL(request.url).hostname === "localhost";
-  const identity = supplied ?? (local ? { userId: "local-admin", email: "local-admin@stablecount.test", displayName: "Local Administrator", fullName: "Local Administrator" } : null);
+  void request;
+  const identity = await getSessionIdentity();
   if (!identity) throw new Error("AUTH_REQUIRED");
   const db = database();
   let row = await db.prepare("SELECT id, platform_user_id, email, display_name, role, status, language, default_view, date_format, compact_mode FROM app_users WHERE platform_user_id=? OR lower(email)=lower(?) LIMIT 1").bind(identity.userId, identity.email).first<Record<string, unknown>>();

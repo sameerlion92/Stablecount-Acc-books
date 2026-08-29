@@ -35,25 +35,16 @@ npm run build
 node --test tests/*.test.mjs
 ```
 
-## Data and file storage
+## Vercel deployment
 
-The current application is built for Cloudflare-compatible infrastructure:
+The application is Vercel-native:
 
-- D1 stores accounting, users, audit history, templates, orders, and other structured records.
-- R2 stores uploaded documents.
-- Database migrations are stored in `drizzle/`.
-- Logical bindings are declared in `.openai/hosting.json`.
+- Next.js provides the interface and server routes.
+- Turso/libSQL stores users, sessions, accounting records, templates, orders, and audit history.
+- Private Vercel Blob storage holds contracts and order documents.
+- Stablecount-owned email/password sessions replace hosting-specific identity headers.
+- The first registered account becomes Super Admin. Invited users activate their seat by setting a password on their first login.
 
-## Vercel compatibility
+Create a Turso database and a private Vercel Blob store, then configure the variables shown in `.env.example` in every Vercel environment. Import this GitHub repository in Vercel with the Next.js framework preset and deploy from `main`.
 
-The repository can be imported into Vercel, but the full application will not run there unchanged. Its server routes currently import Cloudflare Worker bindings and rely on D1, R2, and Sites/ChatGPT authentication headers.
-
-A production Vercel migration requires:
-
-1. Replacing D1 access with Vercel Postgres, Neon, Supabase, or another SQL service.
-2. Replacing R2 access with Vercel Blob, S3, or compatible object storage.
-3. Replacing Sites authentication headers with a Vercel-compatible authentication provider.
-4. Adapting the Vinext/Cloudflare build and runtime configuration for Vercel.
-5. Configuring environment variables and applying the database migrations.
-
-Until that migration is completed, the live supported deployment remains the Stablecount Sites deployment.
+For local development, the app automatically uses `stablecount.db`. Vercel production deliberately requires `TURSO_DATABASE_URL` so records are never written to temporary server storage.
