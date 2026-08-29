@@ -1,4 +1,4 @@
-import { getSessionIdentity } from "../../lib/auth";
+import { clearUserPassword, createPlatformUserId, getSessionIdentity } from "../../lib/auth";
 import { database as vercelDatabase } from "../../lib/database";
 
 type Payload = Record<string, unknown> & { action?: string };
@@ -60,6 +60,8 @@ export async function prepareDatabase() {
   const userColumnNames=new Set(userColumns.results.map(column=>String((column as Record<string,unknown>).name)));
   const userAdditions=["password_hash TEXT","language TEXT NOT NULL DEFAULT 'en'","default_view TEXT NOT NULL DEFAULT 'overview'","date_format TEXT NOT NULL DEFAULT 'DD/MM/YYYY'","compact_mode INTEGER NOT NULL DEFAULT 0"];
   for(const addition of userAdditions){const name=addition.split(" ")[0];if(!userColumnNames.has(name))await db.prepare(`ALTER TABLE app_users ADD COLUMN ${addition}`).run();}
+  const brokenPlatformIds=await db.prepare("SELECT id FROM app_users WHERE platform_user_id IS NULL OR platform_user_id='null'").all();
+  for(const row of brokenPlatformIds.results as Array<{id:number}>){await db.prepare("UPDATE app_users SET platform_user_id=? WHERE id=?").bind(createPlatformUserId(),row.id).run();}
   const invoiceColumns=await db.prepare("PRAGMA table_info(invoices)").all();
   const invoiceColumnNames=new Set(invoiceColumns.results.map(column=>String((column as Record<string,unknown>).name)));
   const invoiceAdditions=["template_id INTEGER REFERENCES invoice_templates(id)","tax_rate REAL NOT NULL DEFAULT 0","tax_amount REAL NOT NULL DEFAULT 0","discount_amount REAL NOT NULL DEFAULT 0","shipping_amount REAL NOT NULL DEFAULT 0","reference TEXT NOT NULL DEFAULT ''","template_snapshot TEXT NOT NULL DEFAULT '{}'"];
@@ -112,14 +114,19 @@ export async function authenticate(request: Request): Promise<Actor> {
   if (!row) throw new Error("SEAT_REQUIRED");
   if (row.status === "disabled") throw new Error("ACCOUNT_DISABLED");
   const wasInvited = row.status === "invited";
-  await db.prepare("UPDATE app_users SET platform_user_id=?, display_name=?, status='active', last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(identity.userId,identity.displayName,row.id).run();
+  const nextPlatformUserId = row.platform_user_id
+    ? String(row.platform_user_id)
+    : identity.userId.startsWith("vercel:")
+      ? identity.userId
+      : createPlatformUserId();
+  await db.prepare("UPDATE app_users SET platform_user_id=?, display_name=?, status='active', last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(nextPlatformUserId, identity.displayName, row.id).run();
   if (wasInvited) await db.prepare("INSERT INTO audit_log (user_id,action,entity_type,entity_id,description,details_json) VALUES (?,?,?,?,?,?)").bind(row.id,"activated","user",String(row.id),`${identity.displayName} activated their user seat`,JSON.stringify({email:identity.email,role:row.role})).run();
   const templateCount=await db.prepare("SELECT COUNT(*) AS count FROM invoice_templates WHERE is_active=1").first<{count:number}>();
   if(Number(templateCount?.count??0)===0)await db.batch([
     db.prepare("INSERT INTO invoice_templates (name,direction,number_prefix,title,seller_name,payment_terms,footer,created_by) VALUES ('StableCount Standard Invoice','sale','INV','COMMERCIAL INVOICE','StableCount (OPC) Private Limited','Payment due within 30 days','Thank you for your business',?)").bind(row.id),
     db.prepare("INSERT INTO invoice_templates (name,direction,number_prefix,title,seller_name,payment_terms,footer,created_by) VALUES ('StableCount Purchase Bill','purchase','BILL','PURCHASE BILL','StableCount (OPC) Private Limited','Payment according to the agreed supplier terms','Recorded by StableCount Acc-books',?)").bind(row.id),
   ]);
-  return { id:Number(row.id), platformUserId:identity.userId, email:identity.email, displayName:identity.displayName, role:String(row.role) as Actor["role"], status:"active", language:String(row.language||"en"), defaultView:String(row.default_view||"overview"), dateFormat:String(row.date_format||"DD/MM/YYYY"), compactMode:Boolean(row.compact_mode) };
+  return { id:Number(row.id), platformUserId:nextPlatformUserId, email:identity.email, displayName:identity.displayName, role:String(row.role) as Actor["role"], status:"active", language:String(row.language||"en"), defaultView:String(row.default_view||"overview"), dateFormat:String(row.date_format||"DD/MM/YYYY"), compactMode:Boolean(row.compact_mode) };
 }
 
 export async function audit(actor: Actor, action: string, entityType: string, entityId: string|number, description: string, details: Record<string, unknown> = {}) {
@@ -226,6 +233,13 @@ export async function POST(request: Request) {
       const nextStatus=target.status==="disabled"?"invited":"disabled";
       await db.prepare("UPDATE app_users SET status=?, platform_user_id=CASE WHEN ?='disabled' THEN NULL ELSE platform_user_id END WHERE id=?").bind(nextStatus,nextStatus,target.id).run();
       await audit(actor,nextStatus==="disabled"?"disabled":"restored","user",String(target.id),`${actor.displayName} ${nextStatus==="disabled"?"disabled":"restored"} access for ${target.email}`,{email:target.email});
+    } else if (payload.action === "user-password-reset") {
+      if(actor.role!=="super_admin")return Response.json({error:"Only the Super Admin can reset user passwords"},{status:403});
+      const target=await db.prepare("SELECT id,email,display_name,role FROM app_users WHERE id=?").bind(Number(payload.userId)).first<Record<string,unknown>>();
+      if(!target)throw new Error("User not found");if(Number(target.id)===actor.id)throw new Error("Use forgot password on the sign-in page for your own account");
+      if(target.role==="super_admin")throw new Error("The Super Admin password cannot be reset from here");
+      await clearUserPassword(Number(target.id));
+      await audit(actor,"password reset","user",String(target.id),`${actor.displayName} cleared the password for ${target.email}. They must set a new password on next sign-in.`,{email:target.email});
     } else if (payload.action === "client") {
       const client=await db.prepare("INSERT INTO clients (name,email,phone,address,country,website,contact_person,currency,bank_name,bank_reference,bank_account_number,beneficiary_name,bank_address,swift_code,ifsc_code,commission_earned,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(required(payload,"name"),required(payload,"email"),String(payload.phone??""),String(payload.address??""),String(payload.country??""),String(payload.website??""),String(payload.contactPerson??""),String(payload.currency??"RUB"),String(payload.bankName??""),String(payload.bankReference??""),String(payload.bankAccountNumber??""),String(payload.beneficiaryName??""),String(payload.bankAddress??""),String(payload.swiftCode??""),String(payload.ifscCode??""),Number(payload.commissionEarned??0),String(payload.kind??"customer")).first<{id:number}>();
       if(client)await audit(actor,"created","client",client.id,`${actor.displayName} created client ${payload.name}`,{email:payload.email,country:payload.country});
@@ -306,7 +320,14 @@ export async function POST(request: Request) {
     } else if (payload.action === "payment") {
       const invoice = await db.prepare("SELECT * FROM invoices WHERE id=?").bind(Number(payload.invoiceId)).first<Record<string,unknown>>();
       if (!invoice) throw new Error("Invoice not found");
+      if (String(invoice.status) === "Paid") throw new Error("This invoice is already paid");
+      if (String(invoice.status) === "Cancelled") throw new Error("Cancelled invoices cannot receive payments");
       const amount = Number(payload.amount??invoice.total);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error("Payment amount must be greater than zero");
+      const paidRow = await db.prepare("SELECT COALESCE(SUM(amount),0) AS paid FROM payments WHERE invoice_id=?").bind(invoice.id).first<{paid:number}>();
+      const remaining = Number(invoice.total) - Number(paidRow?.paid ?? 0);
+      if (remaining <= 0) throw new Error("This invoice has no remaining balance");
+      if (amount > remaining + 0.001) throw new Error(`Payment cannot exceed the remaining balance of ${remaining.toFixed(2)}`);
       const direction = invoice.direction === "purchase" ? "out" : "in";
       await db.prepare("INSERT INTO payments (invoice_id,client_id,bank_account_id,direction,amount,payment_date,reference) VALUES (?,?,?,?,?,?,?)").bind(invoice.id,invoice.client_id,invoice.bank_account_id,direction,amount,required(payload,"paymentDate"),String(payload.reference??"")).run();
       await db.prepare(`UPDATE bank_accounts SET balance=balance ${direction === "in" ? "+" : "-"} ? WHERE id=?`).bind(amount,invoice.bank_account_id).run();
