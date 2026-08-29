@@ -1,0 +1,1 @@
+ALTER TABLE `invoices` ADD `direction` text DEFAULT 'sale' NOT NULL;

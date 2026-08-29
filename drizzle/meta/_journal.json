@@ -1,0 +1,62 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1787913462253,
+      "tag": "0000_unknown_blazing_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787913482368,
+      "tag": "0001_wooden_human_torch",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1787914577454,
+      "tag": "0002_optimal_skullbuster",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787915189564,
+      "tag": "0003_little_the_renegades",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787916010624,
+      "tag": "0004_wise_skaar",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787944258651,
+      "tag": "0005_damp_raza",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787945057221,
+      "tag": "0006_tan_aaron_stack",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787987524898,
+      "tag": "0007_tan_talon",
+      "breakpoints": true
+    }
+  ]
+}
