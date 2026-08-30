@@ -48,6 +48,12 @@ export const ACCOUNTING_BOOKS: AccountingBook[] = [
     sectionId: "purchases",
   },
   {
+    id: "order-register",
+    title: "Order Register",
+    description: "Commercial orders by client, supplier, status, and value",
+    accountCodes: [],
+  },
+  {
     id: "debtors-ledger",
     title: "Debtors Ledger",
     description: "Customer-wise balances, invoices outstanding, advances received",

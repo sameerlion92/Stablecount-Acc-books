@@ -1,4 +1,5 @@
 import type { GeneralLedgerAccount, JournalEntryGroup, PartyLedger, RegisterRow, TaxRegisterRow, AccountBalance } from "./bookkeeping";
+import type { OrderRegisterRow } from "./order-register";
 import { accountingBook } from "./accounting-books";
 import { exportFileStem, formatPeriodLabel } from "./bookkeeping-period";
 
@@ -25,6 +26,7 @@ export type BookExportInput = {
   creditors?: PartyLedger[];
   taxRegisters?: TaxRegisterRow[];
   banks?: Array<Record<string, string | number | boolean | null> & { id: number }>;
+  orderRegister?: OrderRegisterRow[];
   formatAmount?: (value: number, currency?: string) => string;
 };
 
@@ -91,6 +93,27 @@ export function buildBookExportSheets(input: BookExportInput): ExportSheet[] {
         fmt(row.paid, row.currency),
         row.status,
         row.currency,
+      ]),
+    }];
+  }
+
+  if (bookId === "order-register" && input.orderRegister) {
+    return [{
+      name: "Order register",
+      headers: ["Order", "Client", "Supplier", "Description", "Status", "Created", "Expected", "Purchase price", "Purchase currency", "Sale price", "Sale currency", "Commission %"],
+      rows: input.orderRegister.map((row) => [
+        row.orderNo,
+        row.client,
+        row.supplier,
+        row.description,
+        row.status,
+        row.createdAt || "—",
+        row.expectedDate || "—",
+        fmt(row.purchasePrice, row.purchaseCurrency),
+        row.purchaseCurrency,
+        fmt(row.salePrice, row.saleCurrency),
+        row.saleCurrency,
+        row.commissionPercent,
       ]),
     }];
   }
@@ -177,9 +200,10 @@ export function buildBookExportSheets(input: BookExportInput): ExportSheet[] {
 export async function downloadBookExcel(input: BookExportInput) {
   const XLSX = await import("xlsx");
   const sheets = buildBookExportSheets(input);
+  const rangeLabel = input.bookId === "order-register" ? "Filters" : "Period";
   const workbook = XLSX.utils.book_new();
   for (const sheet of sheets) {
-    const worksheet = XLSX.utils.aoa_to_sheet([[input.bookTitle], [`Period: ${input.periodLabel}`], [`Currency: ${input.currency}`], [], sheet.headers, ...sheet.rows]);
+    const worksheet = XLSX.utils.aoa_to_sheet([[input.bookTitle], [`${rangeLabel}: ${input.periodLabel}`], [`Currency: ${input.currency}`], [], sheet.headers, ...sheet.rows]);
     XLSX.utils.book_append_sheet(workbook, worksheet, sanitizeSheetName(sheet.name));
   }
   const stem = exportFileStem(input.bookTitle, input.financialYear, input.month);
@@ -197,10 +221,11 @@ export async function downloadBookPdf(input: BookExportInput) {
   for (const sheet of sheets) {
     if (!first) doc.addPage();
     first = false;
+    const rangeLabel = input.bookId === "order-register" ? "Filters" : "Period";
     doc.setFontSize(16);
     doc.text(input.bookTitle, margin, 36);
     doc.setFontSize(10);
-    doc.text(`Period: ${input.periodLabel}`, margin, 54);
+    doc.text(`${rangeLabel}: ${input.periodLabel}`, margin, 54);
     doc.text(`Currency: ${input.currency}`, margin, 68);
     if (sheets.length > 1) doc.text(sheet.name, margin, 82);
 

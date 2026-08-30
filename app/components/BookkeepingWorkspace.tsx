@@ -27,12 +27,14 @@ import {
   journalSummary,
   partyLedgers,
 } from "../lib/bookkeeping";
+import { filterOrders, orderFilterLabel, orderRegisterRow } from "../lib/order-register";
 import { useI18n } from "../i18n";
 
 type Row = Record<string, string | number | boolean | null> & { id: number };
 type Snapshot = {
   clients: Row[];
   banks: Row[];
+  orders: Row[];
   invoices: Row[];
   journal: Row[];
   currentUser: Row | null;
@@ -48,7 +50,14 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
   const [selectedPartyId, setSelectedPartyId] = useState<number | null>(null);
   const [financialYear, setFinancialYear] = useState(() => financialYearLabel(new Date().toISOString().slice(0, 10)));
   const [month, setMonth] = useState("all");
+  const [orderClientFilter, setOrderClientFilter] = useState("all");
+  const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
+  const [orderDateFrom, setOrderDateFrom] = useState("");
+  const [orderDateTo, setOrderDateTo] = useState("");
+  const [orderIncludeCancelled, setOrderIncludeCancelled] = useState(false);
   const [exporting, setExporting] = useState<"pdf" | "excel" | null>(null);
+
+  const isOrderRegister = activeBook === "order-register";
 
   const allDates = useMemo(() => collectBookkeepingDates(data.journal, data.invoices), [data.journal, data.invoices]);
   const financialYears = useMemo(() => discoverFinancialYears(allDates), [allDates]);
@@ -93,10 +102,32 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
   const active = ACCOUNTING_BOOKS.find((book) => book.id === activeBook) ?? ACCOUNTING_BOOKS[0];
   const selectedParty = (activeBook === "debtors-ledger" ? debtors : activeBook === "creditors-ledger" ? creditors : []).find((party) => party.id === selectedPartyId) ?? null;
 
+  const orderClients = useMemo(
+    () => data.clients.filter((row) => row.kind === "customer" || row.kind === "both"),
+    [data.clients],
+  );
+  const orderSuppliers = useMemo(
+    () => data.clients.filter((row) => row.kind === "vendor" || row.kind === "both"),
+    [data.clients],
+  );
+  const orderFilters = useMemo(
+    () => ({
+      clientId: orderClientFilter,
+      supplierId: orderSupplierFilter,
+      dateFrom: orderDateFrom,
+      dateTo: orderDateTo,
+      includeCancelled: orderIncludeCancelled,
+    }),
+    [orderClientFilter, orderSupplierFilter, orderDateFrom, orderDateTo, orderIncludeCancelled],
+  );
+  const filteredOrders = useMemo(() => filterOrders(data.orders, orderFilters), [data.orders, orderFilters]);
+  const orderRegister = useMemo(() => filteredOrders.map(orderRegisterRow), [filteredOrders]);
+  const orderPeriodLabel = useMemo(() => orderFilterLabel(orderFilters), [orderFilters]);
+
   const exportInput = useMemo(() => ({
     bookId: activeBook,
     bookTitle: active.title,
-    periodLabel: periodLabelForExport(financialYear, month),
+    periodLabel: isOrderRegister ? orderPeriodLabel : periodLabelForExport(financialYear, month),
     financialYear,
     month,
     currency,
@@ -110,8 +141,9 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
     creditors,
     taxRegisters,
     banks: data.banks,
+    orderRegister,
     formatAmount: (value: number, rowCurrency = currency) => money(value, rowCurrency, user),
-  }), [activeBook, active.title, financialYear, month, currency, journalGroups, generalLedger, bookAccounts, bookJournal, salesRegister, purchaseRegister, debtors, creditors, taxRegisters, data.banks, money, user]);
+  }), [activeBook, active.title, isOrderRegister, orderPeriodLabel, financialYear, month, currency, journalGroups, generalLedger, bookAccounts, bookJournal, salesRegister, purchaseRegister, debtors, creditors, taxRegisters, data.banks, orderRegister, money, user]);
 
   async function handleExport(format: "pdf" | "excel") {
     setExporting(format);
@@ -146,35 +178,75 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
 
       <section className="panel bookkeeping-filters">
         <div className="bookkeeping-toolbar">
-          <div className="bookkeeping-toolbar-filters">
+          <div className={`bookkeeping-toolbar-filters ${isOrderRegister ? "order-register-filter-grid" : ""}`}>
             <label className="bookkeeping-field bookkeeping-field-book">
               <span>{t("Register")}</span>
               <select value={activeBook} onChange={(event) => { setActiveBook(event.target.value); setSelectedPartyId(null); }}>
                 {ACCOUNTING_BOOKS.map((book) => <option key={book.id} value={book.id}>{t(book.title)}</option>)}
               </select>
             </label>
-            <label className="bookkeeping-field">
-              <span>{t("Financial year")}</span>
-              <select value={financialYear} onChange={(event) => { setFinancialYear(event.target.value); setMonth("all"); setSelectedPartyId(null); }}>
-                <option value="all">{t("All years")}</option>
-                {financialYears.map((year) => <option key={year} value={year}>FY {year}</option>)}
-              </select>
-            </label>
-            <label className="bookkeeping-field">
-              <span>{t("Month")}</span>
-              <select value={month} onChange={(event) => { setMonth(event.target.value); setSelectedPartyId(null); }}>
-                <option value="all">{t("All months")}</option>
-                {monthOptions.map((value) => <option key={value} value={value}>{formatMonthLabel(value)}</option>)}
-              </select>
-            </label>
-            <div className="bookkeeping-period-chip">
-              <span>{t("Selected period")}</span>
-              <strong>{periodLabel}</strong>
-            </div>
+            {isOrderRegister ? (
+              <>
+                <label className="bookkeeping-field">
+                  <span>{t("Filter by client")}</span>
+                  <select value={orderClientFilter} onChange={(event) => setOrderClientFilter(event.target.value)}>
+                    <option value="all">{t("All clients")}</option>
+                    {orderClients.map((client) => <option key={client.id} value={String(client.id)}>{client.name}</option>)}
+                  </select>
+                </label>
+                <label className="bookkeeping-field">
+                  <span>{t("Filter by supplier")}</span>
+                  <select value={orderSupplierFilter} onChange={(event) => setOrderSupplierFilter(event.target.value)}>
+                    <option value="all">{t("All suppliers")}</option>
+                    {orderSuppliers.map((supplier) => <option key={supplier.id} value={String(supplier.id)}>{supplier.name}</option>)}
+                  </select>
+                </label>
+                <label className="bookkeeping-field">
+                  <span>{t("From date")}</span>
+                  <input type="date" value={orderDateFrom} onChange={(event) => setOrderDateFrom(event.target.value)} />
+                </label>
+                <label className="bookkeeping-field">
+                  <span>{t("To date")}</span>
+                  <input type="date" value={orderDateTo} min={orderDateFrom || undefined} onChange={(event) => setOrderDateTo(event.target.value)} />
+                </label>
+                <label className="bookkeeping-field order-register-check">
+                  <span>{t("Status scope")}</span>
+                  <label className="setting-check">
+                    <input type="checkbox" checked={orderIncludeCancelled} onChange={(event) => setOrderIncludeCancelled(event.target.checked)} />
+                    {t("Include cancelled orders")}
+                  </label>
+                </label>
+                <div className="bookkeeping-period-chip">
+                  <span>{t("Showing")}</span>
+                  <strong>{filteredOrders.length} / {data.orders.length}</strong>
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="bookkeeping-field">
+                  <span>{t("Financial year")}</span>
+                  <select value={financialYear} onChange={(event) => { setFinancialYear(event.target.value); setMonth("all"); setSelectedPartyId(null); }}>
+                    <option value="all">{t("All years")}</option>
+                    {financialYears.map((year) => <option key={year} value={year}>FY {year}</option>)}
+                  </select>
+                </label>
+                <label className="bookkeeping-field">
+                  <span>{t("Month")}</span>
+                  <select value={month} onChange={(event) => { setMonth(event.target.value); setSelectedPartyId(null); }}>
+                    <option value="all">{t("All months")}</option>
+                    {monthOptions.map((value) => <option key={value} value={value}>{formatMonthLabel(value)}</option>)}
+                  </select>
+                </label>
+                <div className="bookkeeping-period-chip">
+                  <span>{t("Selected period")}</span>
+                  <strong>{periodLabel}</strong>
+                </div>
+              </>
+            )}
           </div>
           <div className="bookkeeping-export-actions">
-            <button type="button" className="secondary-button bookkeeping-export-button" disabled={!!exporting} onClick={() => handleExport("excel")}>{exporting === "excel" ? t("Preparing Excel…") : t("Download Excel")}</button>
-            <button type="button" className="primary-button bookkeeping-export-button" disabled={!!exporting} onClick={() => handleExport("pdf")}>{exporting === "pdf" ? t("Preparing PDF…") : t("Download PDF")}</button>
+            <button type="button" className="secondary-button bookkeeping-export-button" disabled={!!exporting || (isOrderRegister && orderRegister.length === 0)} onClick={() => handleExport("excel")}>{exporting === "excel" ? t("Preparing Excel…") : t("Download Excel")}</button>
+            <button type="button" className="primary-button bookkeeping-export-button" disabled={!!exporting || (isOrderRegister && orderRegister.length === 0)} onClick={() => handleExport("pdf")}>{exporting === "pdf" ? t("Preparing PDF…") : t("Download PDF")}</button>
           </div>
         </div>
       </section>
@@ -353,6 +425,51 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
               </div>
             )}
 
+            {activeBook === "order-register" && (
+              <div className="bookkeeping-table-wrap">
+                <table className="bookkeeping-table bookkeeping-table-register">
+                  <thead>
+                    <tr>
+                      <th>{t("Order")}</th>
+                      <th>{t("Client")}</th>
+                      <th>{t("Supplier")}</th>
+                      <th>{t("Description")}</th>
+                      <th>{t("Created")}</th>
+                      <th>{t("Expected")}</th>
+                      <th>{t("Purchase price")}</th>
+                      <th>{t("Sale price")}</th>
+                      <th>{t("Commission")}</th>
+                      <th>{t("Status")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderRegister.length === 0 ? (
+                      <tr>
+                        <td colSpan={10}>
+                          <div className="empty-state">{t("No orders match these filters.")}</div>
+                        </td>
+                      </tr>
+                    ) : (
+                      orderRegister.map((row) => (
+                        <tr key={row.id}>
+                          <td><strong>{row.orderNo}</strong></td>
+                          <td>{row.client}</td>
+                          <td>{row.supplier}</td>
+                          <td>{row.description}</td>
+                          <td>{row.createdAt || "—"}</td>
+                          <td>{row.expectedDate || "—"}</td>
+                          <td>{money(row.purchasePrice, row.purchaseCurrency, user)}</td>
+                          <td>{money(row.salePrice, row.saleCurrency, user)}</td>
+                          <td>{row.commissionPercent.toLocaleString()}%</td>
+                          <td>{row.status}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             {(activeBook === "debtors-ledger" || activeBook === "creditors-ledger") && (
               <div className="bookkeeping-party-layout">
                 <div className="bookkeeping-party-list">
@@ -441,7 +558,7 @@ export function BookkeepingWorkspace({ data, money }: { data: Snapshot; money: (
             )}
           </section>
 
-          {activeBook !== "journal" && activeBook !== "general-ledger" && activeBook !== "sales-register" && activeBook !== "purchase-register" && activeBook !== "debtors-ledger" && activeBook !== "creditors-ledger" && activeBook !== "tax-registers" && (
+          {activeBook !== "journal" && activeBook !== "general-ledger" && activeBook !== "sales-register" && activeBook !== "purchase-register" && activeBook !== "order-register" && activeBook !== "debtors-ledger" && activeBook !== "creditors-ledger" && activeBook !== "tax-registers" && (
             <section className="panel activity-panel bookkeeping-journal">
               <div className="panel-heading">
                 <div>
