@@ -39,6 +39,15 @@ export function resolveDatabaseUrl() {
   return { url: `file:${getDatabaseFilePath()}`, token: undefined };
 }
 
+export function sessionCookieSecure() {
+  const override = process.env.COOKIE_SECURE?.trim().toLowerCase();
+  if (override === "true") return true;
+  if (override === "false") return false;
+  const appUrl = process.env.APP_URL?.trim();
+  if (appUrl) return appUrl.startsWith("https://");
+  return false;
+}
+
 export function getPublicAppUrl(fallbackOrigin: string, request?: Request) {
   const configured = process.env.APP_URL?.trim();
   if (configured) return configured.replace(/\/$/, "");

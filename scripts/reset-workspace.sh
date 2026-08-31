@@ -15,7 +15,12 @@ fi
 echo "This removes all workspace data: database, uploads, and local dev files."
 echo "Target: $DATA_DIR"
 echo ""
-read -r -p "Type RESET to continue: " confirm
+
+if [ "${CONFIRM:-}" = "RESET" ]; then
+  confirm="RESET"
+else
+  read -r -p "Type RESET to continue: " confirm
+fi
 if [ "$confirm" != "RESET" ]; then
   echo "Cancelled."
   exit 1

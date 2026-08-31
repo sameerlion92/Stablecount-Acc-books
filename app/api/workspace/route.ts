@@ -480,7 +480,7 @@ export async function POST(request: Request) {
       if(Number(count?.count??0)>=MAX_SEATS)throw new Error("All 10 user seats are assigned");
       const email=required(payload,"email").toLowerCase();const role=String(payload.role??"operator");
       if(!["manager","operator"].includes(role))throw new Error("Only Level 1 Manager and Level 2 Operator seats can be assigned");
-      const user=await db.prepare("INSERT INTO app_users (email,display_name,role,status) VALUES (?,?,?,'invited') RETURNING id").bind(email,required(payload,"displayName"),role).first<{id:number}>();
+      const user=await db.prepare("INSERT INTO app_users (platform_user_id,email,display_name,role,status) VALUES (?,?,?,?,'invited') RETURNING id").bind(createPlatformUserId(),email,required(payload,"displayName"),role).first<{id:number}>();
       if(!user)throw new Error("User seat could not be created");
       await audit(actor,"invited","user",user.id,`${actor.displayName} assigned a ${role} seat to ${email}`,{email,role});
     } else if (payload.action === "user-status") {

@@ -571,6 +571,43 @@ table{width:100%;border-collapse:collapse;min-width:650px}th{text-align:left;col
 }
 .login-links a{color:#126f94;font-weight:750;text-decoration:none}
 .login-links a:hover{text-decoration:underline}
+.login-mode-switch {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #e3eaed;
+  display: grid;
+  gap: 10px;
+  text-align: center;
+}
+.login-mode-switch p {
+  margin: 0;
+  font-size: 13px;
+  color: #62757d;
+}
+.login-secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid #b8d4df;
+  border-radius: 10px;
+  background: #edf7fa;
+  color: #0b4a62;
+  font-size: 14px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.login-secondary-button:hover {
+  background: #dff0f6;
+  text-decoration: none;
+}
+.login-card>small a {
+  color: #126f94;
+  font-weight: 750;
+  text-decoration: none;
+}
+.login-card>small a:hover { text-decoration: underline; }
 .seat-summary>p{margin:8px 0 0;color:#6f838b;font-size:13px;line-height:1.5;max-width:720px}
 .role-guide{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.role-guide article{padding:15px;border:1px solid var(--line);border-radius:12px;background:white}.role-guide strong,.role-guide span{display:block}.role-guide strong{font-size:13px}.role-guide span{font-size:12px;line-height:1.5;color:#7a898f;margin-top:5px}
 @media(max-width:640px){

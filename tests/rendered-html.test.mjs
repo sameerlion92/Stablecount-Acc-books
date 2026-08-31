@@ -15,6 +15,7 @@ test("Vercel application exposes the Stablecount workspace and login", async () 
   assert.match(workspace, /Activity history/);
   assert.match(login, /Create the Super Admin/);
   assert.match(login, /Forgot your password/);
+  assert.match(login, /New user sign in/);
   assert.match(forgot, /Reset your password/);
   assert.match(reset, /Choose a new password/);
   assert.match(packageJson, /"build": "next build"/);
