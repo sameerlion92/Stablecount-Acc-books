@@ -208,12 +208,29 @@ function ensurePageSpace(pdf: import("jspdf").jsPDF, layout: PdfLayout, y: numbe
   return layout.margin;
 }
 
-async function renderHtmlToPdf(html: string) {
-  const puppeteer = await import("puppeteer");
-  const browser = await puppeteer.default.launch({
+async function launchPdfBrowser() {
+  const puppeteer = await import("puppeteer-core");
+  if (process.platform === "linux") {
+    const chromium = (await import("@sparticuz/chromium")).default;
+    return puppeteer.default.launch({
+      args: [...chromium.args, "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+  }
+  const macChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || (process.platform === "darwin" && existsSync(macChrome) ? macChrome : "");
+  if (!executablePath) throw new Error("No Chromium executable available for PDF rendering");
+  return puppeteer.default.launch({
+    executablePath,
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--font-render-hinting=medium"],
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
   });
+}
+
+async function renderHtmlToPdf(html: string) {
+  const browser = await launchPdfBrowser();
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load", timeout: 30000 });
