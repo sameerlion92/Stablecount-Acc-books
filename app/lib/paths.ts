@@ -80,6 +80,7 @@ export async function ensureDataDirs() {
   const uploadsDir = getUploadsDir();
   await mkdir(dataDir, { recursive: true });
   await mkdir(uploadsDir, { recursive: true });
+  await mkdir(path.join(dataDir, "backups"), { recursive: true });
   if (!existsSync(path.dirname(getDatabaseFilePath()))) {
     await mkdir(path.dirname(getDatabaseFilePath()), { recursive: true });
   }

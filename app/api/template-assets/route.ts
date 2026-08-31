@@ -1,4 +1,5 @@
 import { getObject, putObject } from "../../lib/storage";
+import { queueWorkspaceBackup } from "../../lib/backup";
 import { authenticate, prepareDatabase } from "../workspace/route";
 
 export const runtime = "nodejs";
@@ -34,8 +35,9 @@ export async function POST(request: Request) {
     if (file.size > 2 * 1024 * 1024) throw new Error("Template images must be 2 MB or smaller");
     if (!/^image\//.test(file.type)) throw new Error("Upload a PNG, JPG, WEBP, or GIF image");
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, "-").slice(-120) || "image";
-    const key = `template-assets/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}-${safeName}`;
+    const key = `template-assets/templates/${crypto.randomUUID()}-${safeName}`;
     const blob = await putObject(key, file, file.type || "image/png");
+    queueWorkspaceBackup("invoice-template");
     return Response.json({ url: blob.url }, { status: 201 });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Unable to upload template image" }, { status: 400 });

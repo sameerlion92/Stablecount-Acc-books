@@ -1,6 +1,7 @@
 import { deleteObject } from "../../lib/storage";
 import { changePassword, clearUserPassword, createPlatformUserId, getSessionIdentity, setUserPassword } from "../../lib/auth";
 import { canViewAuditLog, logAudit } from "../../lib/audit";
+import { queueWorkspaceBackup, shouldQueueBackup } from "../../lib/backup";
 import { buildFinancialSummary } from "../../lib/financial-summary";
 import { database as vercelDatabase } from "../../lib/database";
 import { ensureDataDirs } from "../../lib/paths";
@@ -669,6 +670,7 @@ export async function POST(request: Request) {
       const summary = await clearBusinessData();
       await audit(actor, "cleared", "workspace", actor.id, `${actor.displayName} cleared all business data for a fresh start`, summary);
     } else throw new Error("Unknown action");
+    if (shouldQueueBackup(String(payload.action))) queueWorkspaceBackup(String(payload.action));
     return Response.json(await snapshot(actor), { status: 201 });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to save record" }, { status: 400 }); }
 }

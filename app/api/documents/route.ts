@@ -1,9 +1,21 @@
 import { logAudit } from "../../lib/audit";
+import { queueWorkspaceBackup } from "../../lib/backup";
 import { deleteObject, getObject, putObject } from "../../lib/storage";
 import { audit, authenticate, database, prepareDatabase } from "../workspace/route";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+async function documentStorageKey(clientId: number | null, orderId: number | null, safeName: string) {
+  const id = crypto.randomUUID();
+  if (orderId) return `documents/orders/${orderId}/${id}-${safeName}`;
+  if (clientId) {
+    const client = await database().prepare("SELECT kind FROM clients WHERE id=?").bind(clientId).first<{ kind: string }>();
+    const folder = client?.kind === "vendor" ? "suppliers" : "clients";
+    return `documents/${folder}/${clientId}/${id}-${safeName}`;
+  }
+  return `documents/other/${new Date().toISOString().slice(0, 10)}/${id}-${safeName}`;
+}
 
 export async function GET(request: Request) {
   try {
@@ -57,16 +69,19 @@ export async function POST(request: Request) {
       }
     }
     const ids:number[]=[];
+    const clientId=form.get("clientId")?Number(form.get("clientId")):null;
+    const orderId=form.get("orderId")?Number(form.get("orderId")):null;
     for(const file of uploadedFiles){
       const safeName=file.name.replace(/[^a-zA-Z0-9._-]+/g,"-").slice(-120)||"document";
-      const key=`documents/${new Date().toISOString().slice(0,10)}/${crypto.randomUUID()}-${safeName}`;
+      const key=await documentStorageKey(clientId,orderId,safeName);
       const blob=await putObject(key,file,file.type||"application/octet-stream");
       try{
-        const row=await database().prepare("INSERT INTO documents (client_id,order_id,file_name,object_key,content_type,size,category,status,created_by) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id").bind(form.get("clientId")?Number(form.get("clientId")):null,form.get("orderId")?Number(form.get("orderId")):null,file.name,blob.url,file.type||"application/octet-stream",file.size,String(form.get("category")||"Other"),"Uploaded",actor.id).first<{id:number}>();
+        const row=await database().prepare("INSERT INTO documents (client_id,order_id,file_name,object_key,content_type,size,category,status,created_by) VALUES (?,?,?,?,?,?,?,?,?) RETURNING id").bind(clientId,orderId,file.name,blob.url,file.type||"application/octet-stream",file.size,String(form.get("category")||"Other"),"Uploaded",actor.id).first<{id:number}>();
         if(!row)throw new Error("Document record could not be created");ids.push(row.id);
-        await audit(actor,"uploaded","document",row.id,`${actor.displayName} uploaded ${file.name}`,{fileName:file.name,size:file.size,category:form.get("category"),clientId:form.get("clientId"),orderId:form.get("orderId")});
+        await audit(actor,"uploaded","document",row.id,`${actor.displayName} uploaded ${file.name}`,{fileName:file.name,size:file.size,category:form.get("category"),clientId,orderId});
       }catch(error){await deleteObject(blob.url);throw error;}
     }
+    queueWorkspaceBackup("document-upload");
     return Response.json({ids},{status:201});
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to save document" }, { status:400 }); }
 }

@@ -7,7 +7,7 @@ DATA_DIR="${STABLECOUNT_DATA_DIR:-/var/lib/stablecount}"
 echo "Stablecount Acc-books — self-host setup"
 echo "Data directory: $DATA_DIR"
 
-mkdir -p "$DATA_DIR/uploads"
+mkdir -p "$DATA_DIR/uploads" "$DATA_DIR/backups"
 
 if [ ! -f "$ROOT/.env" ]; then
   cp "$ROOT/.env.example" "$ROOT/.env"
@@ -21,6 +21,10 @@ npm run build
 echo ""
 echo "Setup complete. Start with:"
 echo "  STABLECOUNT_DATA_DIR=$DATA_DIR npm run start"
+echo ""
+echo "Schedule automatic backups (daily at 02:15):"
+echo "  STABLECOUNT_DATA_DIR=$DATA_DIR npm run backup"
+echo "  Or install deploy/stablecount-backup.timer with systemd"
 echo ""
 echo "Or with Docker:"
 echo "  docker compose up -d --build"
