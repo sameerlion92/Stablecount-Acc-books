@@ -42,6 +42,20 @@ export async function POST(request: Request) {
     const uploadedFiles=form.getAll("file").filter((value):value is File=>value instanceof File&&value.size>0);
     if(uploadedFiles.length===0)throw new Error("Choose one or more documents to upload");
     if(uploadedFiles.some(file=>file.size>25*1024*1024))throw new Error("Each document must be 25 MB or smaller");
+    const db = database();
+    if (actor.role === "operator") {
+      const clientId = form.get("clientId") ? Number(form.get("clientId")) : null;
+      const orderId = form.get("orderId") ? Number(form.get("orderId")) : null;
+      if (orderId) {
+        const order = await db.prepare("SELECT client_id FROM orders WHERE id=?").bind(orderId).first<{ client_id: number }>();
+        if (!order) throw new Error("Order not found");
+        const allowed = await db.prepare("SELECT 1 FROM user_client_assignments WHERE user_id=? AND client_id=?").bind(actor.id, order.client_id).first();
+        if (!allowed) throw new Error("You are not assigned to this client");
+      } else if (clientId) {
+        const allowed = await db.prepare("SELECT 1 FROM user_client_assignments WHERE user_id=? AND client_id=?").bind(actor.id, clientId).first();
+        if (!allowed) throw new Error("You are not assigned to this client");
+      }
+    }
     const ids:number[]=[];
     for(const file of uploadedFiles){
       const safeName=file.name.replace(/[^a-zA-Z0-9._-]+/g,"-").slice(-120)||"document";

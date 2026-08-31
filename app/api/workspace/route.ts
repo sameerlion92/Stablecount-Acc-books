@@ -145,6 +145,7 @@ async function deleteInvoiceCascade(db: SqlDatabase, invoiceId: number) {
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS clients (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL DEFAULT '', address TEXT NOT NULL DEFAULT '', country TEXT NOT NULL DEFAULT '', website TEXT NOT NULL DEFAULT '', contact_person TEXT NOT NULL DEFAULT '', currency TEXT NOT NULL DEFAULT 'USD', bank_name TEXT NOT NULL DEFAULT '', bank_reference TEXT NOT NULL DEFAULT '', bank_account_number TEXT NOT NULL DEFAULT '', beneficiary_name TEXT NOT NULL DEFAULT '', bank_address TEXT NOT NULL DEFAULT '', swift_code TEXT NOT NULL DEFAULT '', ifsc_code TEXT NOT NULL DEFAULT '', commission_earned REAL NOT NULL DEFAULT 0, kind TEXT NOT NULL DEFAULT 'customer', is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS client_supplier_links (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id INTEGER NOT NULL REFERENCES clients(id), supplier_id INTEGER NOT NULL REFERENCES clients(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
+  `CREATE TABLE IF NOT EXISTS user_client_assignments (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES app_users(id), client_id INTEGER NOT NULL REFERENCES clients(id), assigned_by INTEGER NOT NULL REFERENCES app_users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS bank_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, nickname TEXT NOT NULL, bank_name TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'USD', account_last4 TEXT NOT NULL, balance REAL NOT NULL DEFAULT 0, is_default INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_no TEXT NOT NULL UNIQUE, client_id INTEGER NOT NULL REFERENCES clients(id), supplier_id INTEGER REFERENCES clients(id), description TEXT NOT NULL, amount REAL NOT NULL DEFAULT 0, currency TEXT NOT NULL DEFAULT 'RUB', purchase_price REAL NOT NULL DEFAULT 0, sale_price REAL NOT NULL DEFAULT 0, commission_percent REAL NOT NULL DEFAULT 0, purchase_currency TEXT NOT NULL DEFAULT 'RUB', sale_currency TEXT NOT NULL DEFAULT 'RUB', purchase_invoice_details TEXT NOT NULL DEFAULT '', sales_invoice_details TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Confirmed', expected_date TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
   `CREATE TABLE IF NOT EXISTS shipments (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_no TEXT NOT NULL UNIQUE, order_id INTEGER NOT NULL REFERENCES orders(id), carrier TEXT NOT NULL DEFAULT '', tracking_no TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Preparing', eta TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
@@ -172,6 +173,9 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_audit_log_user_id ON audit_log(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_documents_client_id ON documents(client_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_client_supplier_unique ON client_supplier_links(client_id,supplier_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_client_unique ON user_client_assignments(user_id,client_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_user_client_user ON user_client_assignments(user_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_user_client_client ON user_client_assignments(client_id)`,
 ];
 
 export function database() {
@@ -276,12 +280,46 @@ export async function audit(actor: Actor, action: string, entityType: string, en
 
 export { canViewAuditLog };
 
+function canAssignClients(actor: Actor) {
+  return actor.role === "super_admin" || actor.role === "manager";
+}
+
+async function operatorClientIds(db: SqlDatabase, userId: number) {
+  const rows = await db.prepare("SELECT client_id FROM user_client_assignments WHERE user_id=?").bind(userId).all();
+  return (rows.results as Array<{ client_id: number }>).map((row) => Number(row.client_id));
+}
+
+async function assertOperatorClientAccess(db: SqlDatabase, actor: Actor, clientId: number) {
+  if (actor.role !== "operator") return;
+  const allowed = await operatorClientIds(db, actor.id);
+  if (!allowed.includes(clientId)) throw new Error("You are not assigned to this client");
+}
+
+async function assertAssignableOperator(db: SqlDatabase, userId: number) {
+  const user = await db.prepare("SELECT id,display_name,role FROM app_users WHERE id=?").bind(userId).first<{ id: number; display_name: string; role: string }>();
+  if (!user) throw new Error("User not found");
+  if (user.role !== "operator") throw new Error("Clients can only be assigned to Level 2 operators");
+  return user;
+}
+
+async function assertAssignableClient(db: SqlDatabase, clientId: number) {
+  const client = await db.prepare("SELECT id,name,kind FROM clients WHERE id=? AND is_active=1").bind(clientId).first<{ id: number; name: string; kind: string }>();
+  if (!client) throw new Error("Client not found");
+  if (client.kind === "vendor") throw new Error("Only clients can be assigned to operators");
+  return client;
+}
+
+function filterByClientIds<T extends Record<string, unknown>>(rows: T[], key: string, allowed: Set<number>) {
+  if (!allowed.size) return [];
+  return rows.filter((row) => allowed.has(Number(row[key])));
+}
+
 async function snapshot(actor: Actor) {
   const db = database();
   const activityQuery = canViewAuditLog(actor.role)
     ? db.prepare("SELECT a.id,a.user_id,a.action,a.entity_type,a.entity_id,a.description,a.details_json,a.created_at,u.display_name,u.email,u.role FROM audit_log a JOIN app_users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 500").all()
     : Promise.resolve({ results: [] });
-  const [clients, banks, orders, shipments, invoices, invoiceItems, journal, users, activity, rates, documents, partyLinks, invoiceTemplates] = await Promise.all([
+  const [clients, banks, orders, shipments, invoices, invoiceItems, journal, users, activity, rates, documents, partyLinks, invoiceTemplates, clientAssignments] = await Promise.all([
     db.prepare(`SELECT c.*, COALESCE(SUM(CASE WHEN i.direction='sale' AND i.status NOT IN ('Cancelled') THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='in'),0) AS receivable, COALESCE(SUM(CASE WHEN i.direction='purchase' AND i.status NOT IN ('Cancelled') THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='out'),0) AS payable FROM clients c LEFT JOIN invoices i ON i.client_id=c.id WHERE c.is_active=1 GROUP BY c.id ORDER BY c.name`).all(),
     db.prepare("SELECT * FROM bank_accounts WHERE is_active=1 ORDER BY is_default DESC, nickname").all(),
     db.prepare("SELECT o.*, c.name AS client_name, s.name AS supplier_name FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN clients s ON s.id=o.supplier_id ORDER BY o.id DESC").all(),
@@ -295,10 +333,30 @@ async function snapshot(actor: Actor) {
     db.prepare("SELECT d.*,c.name AS client_name,o.order_no,u.display_name AS uploaded_by FROM documents d LEFT JOIN clients c ON c.id=d.client_id LEFT JOIN orders o ON o.id=d.order_id JOIN app_users u ON u.id=d.created_by ORDER BY d.id DESC").all(),
     db.prepare("SELECT * FROM client_supplier_links ORDER BY id DESC").all(),
     db.prepare("SELECT t.*,u.display_name AS created_by_name FROM invoice_templates t JOIN app_users u ON u.id=t.created_by WHERE t.is_active=1 ORDER BY t.id DESC").all(),
+    db.prepare("SELECT uca.id,uca.user_id,uca.client_id,uca.assigned_by,uca.created_at,c.name AS client_name,u.display_name AS user_name,ab.display_name AS assigned_by_name FROM user_client_assignments uca JOIN clients c ON c.id=uca.client_id JOIN app_users u ON u.id=uca.user_id JOIN app_users ab ON ab.id=uca.assigned_by ORDER BY u.display_name,c.name").all(),
   ]);
-  const clientRows = clients.results as Record<string, unknown>[];
-  const bankRows = banks.results as Record<string, unknown>[];
-  const invoiceRows = invoices.results as Record<string, unknown>[];
+  let clientRows = clients.results as Record<string, unknown>[];
+  let bankRows = banks.results as Record<string, unknown>[];
+  let orderRows = orders.results as Record<string, unknown>[];
+  let shipmentRows = shipments.results as Record<string, unknown>[];
+  let invoiceRows = invoices.results as Record<string, unknown>[];
+  let invoiceItemRows = invoiceItems.results as Record<string, unknown>[];
+  let journalRows = journal.results as Record<string, unknown>[];
+  let documentRows = documents.results as Record<string, unknown>[];
+  let partyLinkRows = partyLinks.results as Record<string, unknown>[];
+  const assignmentRows = clientAssignments.results as Record<string, unknown>[];
+  if (actor.role === "operator") {
+    const allowed = new Set(await operatorClientIds(db, actor.id));
+    clientRows = filterByClientIds(clientRows, "id", allowed);
+    orderRows = filterByClientIds(orderRows, "client_id", allowed);
+    shipmentRows = shipmentRows.filter((row) => allowed.has(Number(row.client_id)));
+    invoiceRows = filterByClientIds(invoiceRows, "client_id", allowed);
+    const invoiceIds = new Set(invoiceRows.map((row) => Number(row.id)));
+    invoiceItemRows = invoiceItemRows.filter((row) => invoiceIds.has(Number(row.invoice_id)));
+    journalRows = journalRows.filter((row) => row.client_id == null || allowed.has(Number(row.client_id)));
+    documentRows = documentRows.filter((row) => row.client_id == null || allowed.has(Number(row.client_id)));
+    partyLinkRows = filterByClientIds(partyLinkRows, "client_id", allowed);
+  }
   const summary = buildFinancialSummary({
     clients: clientRows,
     banks: bankRows,
@@ -306,7 +364,7 @@ async function snapshot(actor: Actor) {
     reportingCurrency: actor.reportingCurrency,
     rates: rates.results as Array<{ base_currency: string; quote_currency: string; rate: number; effective_date: string }>,
   });
-  return { clients: clientRows, banks: bankRows, orders: orders.results, shipments: shipments.results, invoices: invoiceRows, invoiceItems: invoiceItems.results, invoiceTemplates:invoiceTemplates.results, journal: journal.results, users: users.results, activity: activity.results, rates: rates.results, documents: documents.results, partyLinks:partyLinks.results, currentUser: actor, reportingCurrency: actor.reportingCurrency, seats: { used: users.results.filter((row) => (row as Record<string,unknown>).status !== "disabled").length, limit: MAX_SEATS }, summary };
+  return { clients: clientRows, banks: bankRows, orders: orderRows, shipments: shipmentRows, invoices: invoiceRows, invoiceItems: invoiceItemRows, invoiceTemplates:invoiceTemplates.results, journal: journalRows, users: users.results, activity: activity.results, rates: rates.results, documents: documentRows, partyLinks:partyLinkRows, clientAssignments: assignmentRows, currentUser: actor, reportingCurrency: actor.reportingCurrency, seats: { used: users.results.filter((row) => (row as Record<string,unknown>).status !== "disabled").length, limit: MAX_SEATS }, summary };
 }
 
 function required(payload: Payload, field: string) {
@@ -380,7 +438,7 @@ export async function POST(request: Request) {
     const actor = await authenticate(request);
     const payload = await request.json() as Payload;
     const db = database();
-    if (actor.role === "operator" && ["user","user-edit","user-status","user-password-reset","user-password-set","client","client-edit","party-link","party-unlink","bank","exchange-rate","delete","invoice-template","invoice-template-edit","invoice-edit"].includes(String(payload.action))) return Response.json({error:"Level 2 operators cannot change protected master, templates, or access data"},{status:403});
+    if (actor.role === "operator" && ["user","user-edit","user-status","user-password-reset","user-password-set","client","client-edit","party-link","party-unlink","client-assign","client-unassign","bank","exchange-rate","delete","invoice-template","invoice-template-edit","invoice-edit"].includes(String(payload.action))) return Response.json({error:"Level 2 operators cannot change protected master, templates, or access data"},{status:403});
     if(payload.action==="settings"){
       const displayName=String(payload.displayName??"").trim();
       const language=String(payload.language??"en");
@@ -426,9 +484,12 @@ export async function POST(request: Request) {
       }else if(entityType==="exchange-rate"){
         const record=await db.prepare("SELECT base_currency,quote_currency FROM exchange_rates WHERE id=?").bind(entityId).first<Record<string,unknown>>();if(!record)throw new Error("Exchange rate not found");label=`${record.base_currency}/${record.quote_currency}`;await db.prepare("DELETE FROM exchange_rates WHERE id=?").bind(entityId).run();
       }else if(entityType==="shipment"){
-        const record=await db.prepare("SELECT shipment_no FROM shipments WHERE id=?").bind(entityId).first<{shipment_no:string}>();if(!record)throw new Error("Shipment not found");label=record.shipment_no;await db.prepare("DELETE FROM shipments WHERE id=?").bind(entityId).run();
+        const record=await db.prepare("SELECT shipment_no,order_id FROM shipments WHERE id=?").bind(entityId).first<{shipment_no:string;order_id:number}>();if(!record)throw new Error("Shipment not found");label=record.shipment_no;
+        const order=await db.prepare("SELECT client_id FROM orders WHERE id=?").bind(record.order_id).first<{client_id:number}>();if(order)await assertOperatorClientAccess(db,actor,Number(order.client_id));
+        await db.prepare("DELETE FROM shipments WHERE id=?").bind(entityId).run();
       }else if(entityType==="order"){
-        const record=await db.prepare("SELECT order_no FROM orders WHERE id=?").bind(entityId).first<{order_no:string}>();if(!record)throw new Error("Order not found");label=record.order_no;
+        const record=await db.prepare("SELECT order_no,client_id FROM orders WHERE id=?").bind(entityId).first<{order_no:string;client_id:number}>();if(!record)throw new Error("Order not found");label=record.order_no;
+        await assertOperatorClientAccess(db,actor,Number(record.client_id));
         const invoiceCount=await db.prepare("SELECT COUNT(*) AS count FROM invoices WHERE order_id=?").bind(entityId).first<{count:number}>();
         if(Number(invoiceCount?.count??0)>0){
           await db.prepare("UPDATE orders SET status='Cancelled' WHERE id=?").bind(entityId).run();
@@ -441,7 +502,8 @@ export async function POST(request: Request) {
       }else if(entityType==="invoice-template"){
         const record=await db.prepare("SELECT name FROM invoice_templates WHERE id=? AND is_active=1").bind(entityId).first<{name:string}>();if(!record)throw new Error("Invoice template not found");label=record.name;await db.prepare("UPDATE invoice_templates SET is_active=0 WHERE id=?").bind(entityId).run();outcome="archived";
       }else if(entityType==="invoice"){
-        const record=await db.prepare("SELECT invoice_no FROM invoices WHERE id=?").bind(entityId).first<{invoice_no:string}>();if(!record)throw new Error("Invoice not found");label=record.invoice_no;
+        const record=await db.prepare("SELECT invoice_no,client_id FROM invoices WHERE id=?").bind(entityId).first<{invoice_no:string;client_id:number}>();if(!record)throw new Error("Invoice not found");label=record.invoice_no;
+        await assertOperatorClientAccess(db,actor,Number(record.client_id));
         await deleteInvoiceCascade(db,entityId);
       }else throw new Error("This record cannot be deleted");
       await audit(actor,outcome,entityType,entityId,`${actor.displayName} ${outcome} ${label}`,{entityType,label});
@@ -481,6 +543,7 @@ export async function POST(request: Request) {
       if(duplicate)throw new Error("Another user already uses this email");
       await db.prepare("UPDATE app_users SET display_name=?,email=?,role=?,status=?,platform_user_id=CASE WHEN ?='disabled' THEN NULL ELSE platform_user_id END WHERE id=?").bind(displayName,email,role,status,status,userId).run();
       if(status==="disabled")await db.prepare("DELETE FROM app_sessions WHERE user_id=?").bind(userId).run();
+      if(target.role==="operator"&&role!=="operator")await db.prepare("DELETE FROM user_client_assignments WHERE user_id=?").bind(userId).run();
       await audit(actor,"updated","user",String(userId),`${actor.displayName} updated access for ${email}`,{before:target,displayName,email,role,status});
     } else if (payload.action === "user-password-reset") {
       if(actor.role!=="super_admin")return Response.json({error:"Only the Super Admin can reset user passwords"},{status:403});
@@ -516,6 +579,23 @@ export async function POST(request: Request) {
       await db.prepare("INSERT OR IGNORE INTO client_supplier_links (client_id,supplier_id) VALUES (?,?)").bind(clientId,supplierId).run();await audit(actor,"linked","client-supplier",`${clientId}:${supplierId}`,`${actor.displayName} linked a supplier to a client`,{clientId,supplierId});
     } else if (payload.action === "party-unlink") {
       const clientId=Number(payload.clientId);const supplierId=Number(payload.supplierId);await db.prepare("DELETE FROM client_supplier_links WHERE client_id=? AND supplier_id=?").bind(clientId,supplierId).run();await audit(actor,"unlinked","client-supplier",`${clientId}:${supplierId}`,`${actor.displayName} removed a client-supplier link`,{clientId,supplierId});
+    } else if (payload.action === "client-assign") {
+      if (!canAssignClients(actor)) return Response.json({ error: "Only Super Admin and Level 1 can assign clients to operators" }, { status: 403 });
+      const userId = Number(payload.userId);
+      const clientId = Number(payload.clientId);
+      const operator = await assertAssignableOperator(db, userId);
+      const client = await assertAssignableClient(db, clientId);
+      await db.prepare("INSERT OR IGNORE INTO user_client_assignments (user_id,client_id,assigned_by) VALUES (?,?,?)").bind(userId, clientId, actor.id).run();
+      await audit(actor, "assigned", "user-client", `${userId}:${clientId}`, `${actor.displayName} assigned ${client.name} to ${operator.display_name}`, { userId, clientId, clientName: client.name, operatorName: operator.display_name });
+    } else if (payload.action === "client-unassign") {
+      if (!canAssignClients(actor)) return Response.json({ error: "Only Super Admin and Level 1 can assign clients to operators" }, { status: 403 });
+      const userId = Number(payload.userId);
+      const clientId = Number(payload.clientId);
+      const operator = await assertAssignableOperator(db, userId);
+      const client = await db.prepare("SELECT id,name FROM clients WHERE id=?").bind(clientId).first<{ id: number; name: string }>();
+      if (!client) throw new Error("Client not found");
+      await db.prepare("DELETE FROM user_client_assignments WHERE user_id=? AND client_id=?").bind(userId, clientId).run();
+      await audit(actor, "unassigned", "user-client", `${userId}:${clientId}`, `${actor.displayName} removed ${client.name} from ${operator.display_name}`, { userId, clientId, clientName: client.name, operatorName: operator.display_name });
     } else if (payload.action === "bank") {
       if (payload.isDefault) await db.prepare("UPDATE bank_accounts SET is_default=0").run();
       const bank=await db.prepare("INSERT INTO bank_accounts (nickname,bank_name,currency,account_last4,balance,is_default) VALUES (?,?,?,?,?,?) RETURNING id").bind(required(payload,"nickname"),required(payload,"bankName"),String(payload.currency??"RUB"),required(payload,"accountLast4").slice(-4),Number(payload.balance??0),payload.isDefault?1:0).first<{id:number}>();
@@ -526,12 +606,17 @@ export async function POST(request: Request) {
       if(record)await audit(actor,"created","exchange rate",record.id,`${actor.displayName} set ${payload.baseCurrency}/${payload.quoteCurrency} to ${rate}`,{baseCurrency:payload.baseCurrency,quoteCurrency:payload.quoteCurrency,rate,effectiveDate:payload.effectiveDate});
     } else if (payload.action === "status") {
       const entityType=String(payload.entityType);const entityId=Number(payload.entityId);const status=required(payload,"status");
-      const allowed:Record<string,{table:string,label:string}>={order:{table:"orders",label:"order"},shipment:{table:"shipments",label:"shipment"},invoice:{table:"invoices",label:"invoice"}};
+      const allowed:Record<string,{table:string,label:string,clientColumn?:string}>={order:{table:"orders",label:"order",clientColumn:"client_id"},shipment:{table:"shipments",label:"shipment"},invoice:{table:"invoices",label:"invoice",clientColumn:"client_id"}};
       const target=allowed[entityType];if(!target)throw new Error("This record status cannot be changed");
-      const before=await db.prepare(`SELECT status FROM ${target.table} WHERE id=?`).bind(entityId).first<{status:string}>();if(!before)throw new Error("Record not found");
+      const before=await db.prepare(`SELECT status${target.clientColumn?`,${target.clientColumn}`:""} FROM ${target.table} WHERE id=?`).bind(entityId).first<{status:string;client_id?:number}>();
+      if(!before)throw new Error("Record not found");
+      if(target.clientColumn&&before.client_id!=null)await assertOperatorClientAccess(db,actor,Number(before.client_id));
+      if(entityType==="shipment"){const shipment=await db.prepare("SELECT o.client_id FROM shipments s JOIN orders o ON o.id=s.order_id WHERE s.id=?").bind(entityId).first<{client_id:number}>();if(shipment)await assertOperatorClientAccess(db,actor,Number(shipment.client_id));}
       await db.prepare(`UPDATE ${target.table} SET status=? WHERE id=?`).bind(status,entityId).run();
       await audit(actor,"status changed",target.label,entityId,`${actor.displayName} changed ${target.label} status from ${before.status} to ${status}`,{before:before.status,after:status});
     } else if (payload.action === "order") {
+      const clientId=Number(payload.clientId);
+      await assertOperatorClientAccess(db,actor,clientId);
       const orderNo = await nextPrefixedNumber(db, "orders", "order_no", "ORD-", 2061);
       const salePrice=Number(payload.salePrice??0);const purchasePrice=Number(payload.purchasePrice??0);const commission=Number(payload.commissionPercent??0);
       if(!Number.isFinite(commission)||commission<0||commission>100)throw new Error("Commission percentage must be between 0 and 100");
@@ -539,10 +624,15 @@ export async function POST(request: Request) {
       if(order)await audit(actor,"created","order",order.id,`${actor.displayName} created order ${orderNo}`,{clientId:payload.clientId,supplierId:payload.supplierId,purchasePrice,salePrice,commission});
     } else if (payload.action === "order-edit") {
       const orderId=Number(payload.orderId);const before=await db.prepare("SELECT * FROM orders WHERE id=?").bind(orderId).first<Record<string,unknown>>();if(!before)throw new Error("Order not found");
+      await assertOperatorClientAccess(db,actor,Number(before.client_id));
+      const nextClientId=Number(payload.clientId);
+      if(nextClientId!==Number(before.client_id))await assertOperatorClientAccess(db,actor,nextClientId);
       const salePrice=Number(payload.salePrice??0);const purchasePrice=Number(payload.purchasePrice??0);const commission=Number(payload.commissionPercent??0);if(!Number.isFinite(commission)||commission<0||commission>100)throw new Error("Commission percentage must be between 0 and 100");
       await db.prepare("UPDATE orders SET client_id=?,supplier_id=?,description=?,amount=?,currency=?,purchase_price=?,sale_price=?,commission_percent=?,purchase_currency=?,sale_currency=?,purchase_invoice_details=?,sales_invoice_details=?,status=?,expected_date=? WHERE id=?").bind(Number(payload.clientId),payload.supplierId?Number(payload.supplierId):null,required(payload,"description"),salePrice,String(payload.saleCurrency??"RUB"),purchasePrice,salePrice,commission,String(payload.purchaseCurrency??"RUB"),String(payload.saleCurrency??"RUB"),String(payload.purchaseInvoiceDetails??""),String(payload.salesInvoiceDetails??""),String(payload.status??"Confirmed"),String(payload.expectedDate??"")||null,orderId).run();
       await audit(actor,"updated","order",orderId,`${actor.displayName} updated order ${before.order_no}`,{before,supplierId:payload.supplierId,purchasePrice,salePrice,commission});
     } else if (payload.action === "shipment") {
+      const order=await db.prepare("SELECT client_id FROM orders WHERE id=?").bind(Number(payload.orderId)).first<{client_id:number}>();if(!order)throw new Error("Choose a valid order");
+      await assertOperatorClientAccess(db,actor,Number(order.client_id));
       const shipmentNo = await nextPrefixedNumber(db, "shipments", "shipment_no", "SHP-", 832);
       const shipment=await db.prepare("INSERT INTO shipments (shipment_no,order_id,carrier,tracking_no,status,eta) VALUES (?,?,?,?,?,?) RETURNING id").bind(shipmentNo,Number(payload.orderId),required(payload,"carrier"),String(payload.trackingNo??""),String(payload.status??"Preparing"),String(payload.eta??"")||null).first<{id:number}>();
       if(shipment)await audit(actor,"created","shipment",shipment.id,`${actor.displayName} created shipment ${shipmentNo}`,{orderId:payload.orderId,carrier:payload.carrier,trackingNo:payload.trackingNo,status:payload.status});
@@ -559,6 +649,7 @@ export async function POST(request: Request) {
       }
     } else if (payload.action === "invoice"||payload.action === "invoice-edit") {
       const order=await db.prepare("SELECT id,client_id,description,sale_price,sale_currency,purchase_price,purchase_currency FROM orders WHERE id=?").bind(Number(payload.orderId)).first<Record<string,unknown>>();if(!order)throw new Error("Choose a valid order");
+      await assertOperatorClientAccess(db,actor,Number(order.client_id));
       const template=await db.prepare("SELECT * FROM invoice_templates WHERE id=? AND is_active=1").bind(Number(payload.templateId)).first<Record<string,unknown>>();if(!template)throw new Error("Choose an invoice template");
       const direction=String(template.direction)==="purchase"?"purchase":"sale";
       const lines=parseLineItems(payload);const subtotal=lineItemsSubtotal(lines);const taxRate=Number(payload.taxRate??0);const taxAmount=subtotal*taxRate/100;const discount=Number(payload.discountAmount??0);const shipping=Number(payload.shippingAmount??0);const total=subtotal+taxAmount-discount+shipping;
@@ -580,6 +671,7 @@ export async function POST(request: Request) {
     } else if (payload.action === "payment") {
       const invoice = await db.prepare("SELECT * FROM invoices WHERE id=?").bind(Number(payload.invoiceId)).first<Record<string,unknown>>();
       if (!invoice) throw new Error("Invoice not found");
+      await assertOperatorClientAccess(db, actor, Number(invoice.client_id));
       if (String(invoice.status) === "Paid") throw new Error("This invoice is already paid");
       if (String(invoice.status) === "Cancelled") throw new Error("Cancelled invoices cannot receive payments");
       const amount = Number(payload.amount??invoice.total);
