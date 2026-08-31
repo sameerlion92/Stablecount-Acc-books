@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { isSelfHosted } from "./self-host";
 
 /** Persistent data root: database file and uploaded documents live here. */
 export function getDataDir() {
@@ -23,6 +24,9 @@ export function getDatabaseFilePath() {
 }
 
 export function resolveDatabaseUrl() {
+  if (isSelfHosted()) {
+    return { url: `file:${getDatabaseFilePath()}`, token: undefined };
+  }
   const hostedUrl =
     process.env.DATABASE_URL?.trim() ||
     process.env.TURSO_DATABASE_URL?.trim() ||
@@ -71,6 +75,7 @@ export function appRedirectPath(request: Request, pathname: string) {
 }
 
 export function storageMode() {
+  if (isSelfHosted()) return "local" as const;
   if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) return "vercel-blob" as const;
   return "local" as const;
 }

@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { getUploadsDir, storageMode } from "./paths";
+import { isSelfHosted } from "./self-host";
 
 const LOCAL_PREFIX = "local:";
 
@@ -84,12 +85,13 @@ async function blobDel(ref: string) {
 }
 
 export async function putObject(key: string, file: File, contentType: string) {
-  if (usesBlobStorage()) return blobPut(key, file, contentType);
-  return putLocal(key, file, contentType);
+  if (isSelfHosted() || !usesBlobStorage()) return putLocal(key, file, contentType);
+  return blobPut(key, file, contentType);
 }
 
 export async function getObject(ref: string): Promise<StoredObject | null> {
   if (ref.startsWith(LOCAL_PREFIX)) return getLocal(ref);
+  if (isSelfHosted()) return null;
   if (!usesBlobStorage()) return null;
   const object = await blobGet(ref);
   if (!object) return null;
@@ -104,6 +106,7 @@ export async function deleteObject(ref: string) {
     await deleteLocal(ref);
     return;
   }
+  if (isSelfHosted()) return;
   if (!usesBlobStorage()) return;
   await blobDel(ref);
 }

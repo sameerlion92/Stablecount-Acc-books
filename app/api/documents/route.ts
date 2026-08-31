@@ -28,7 +28,7 @@ export async function GET(request: Request) {
     if (!row) return Response.json({ error: "Document not found" }, { status: 404 });
     await logAudit(actor.id, wantsInline ? "viewed" : "downloaded", "document", id, `${actor.displayName} ${wantsInline ? "viewed" : "downloaded"} ${row.file_name}`, { fileName: row.file_name, mode: wantsInline ? "inline" : "download" });
     const object = await getObject(String(row.object_key));
-    if (!object) return Response.json({ error: "Stored file not found" }, { status: 404 });
+    if (!object) return Response.json({ error: "Stored file not found on this server. Re-upload the document to keep it on your personal server." }, { status: 404 });
     const contentType = String(row.content_type || object.contentType || "application/octet-stream");
     const canViewInline = /^(application\/pdf|image\/|text\/plain)/i.test(contentType);
     const disposition = wantsInline && canViewInline ? "inline" : "attachment";

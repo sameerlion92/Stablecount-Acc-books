@@ -2,6 +2,7 @@
 
 import { FormEvent, useMemo } from "react";
 import { useI18n } from "../i18n";
+import { DocumentFileActions, documentViewerTarget, type ViewerTarget } from "./DocumentViewer";
 
 type Row = Record<string, string | number | boolean | null> & { id: number };
 type Snapshot = {
@@ -37,6 +38,7 @@ export function OrderWorkspace({
   removeDocument,
   removeRecord,
   post,
+  openViewer,
 }: {
   data: Snapshot;
   money: (value: unknown, currency?: string, user?: Row | null) => string;
@@ -47,6 +49,7 @@ export function OrderWorkspace({
   removeDocument: (id: number) => void;
   removeRecord: (type: string, id: number, label: string) => void;
   post: (payload: Record<string, unknown>) => Promise<unknown>;
+  openViewer: (target: ViewerTarget) => void;
 }) {
   const { t } = useI18n();
   const user = data.currentUser;
@@ -169,11 +172,12 @@ export function OrderWorkspace({
                       <strong>{file.file_name}</strong>
                       <small>{file.category} · {formatBytes(Number(file.size))} · {file.uploaded_by}</small>
                     </span>
-                    <a className="table-action" href={`/api/documents?id=${file.id}&view=1`} target="_blank" rel="noreferrer">{t("View")}</a>
-                    <a className="table-action" href={`/api/documents?id=${file.id}`}>{t("Download")}</a>
-                    {data.currentUser?.role !== "operator" && (
-                      <button className="delete-link" type="button" onClick={() => removeDocument(file.id)}>{t("Delete")}</button>
-                    )}
+                    <DocumentFileActions
+                      target={documentViewerTarget(file)}
+                      onView={() => openViewer(documentViewerTarget(file))}
+                      canDelete={data.currentUser?.role !== "operator"}
+                      onDelete={() => removeDocument(file.id)}
+                    />
                   </article>
                 ))
               )}

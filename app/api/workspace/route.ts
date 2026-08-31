@@ -29,7 +29,7 @@ export type Actor = {
 };
 const MAX_SEATS = 10;
 const VALID_LANGUAGES = new Set(["en", "ru", "ar", "de", "es", "pt"]);
-const VALID_VIEWS = new Set(["overview", "clients", "suppliers", "orders", "invoices", "banks", "bookkeeping", "reports", "master", "users", "activity", "settings"]);
+const VALID_VIEWS = new Set(["overview", "clients", "suppliers", "orders", "documents", "invoices", "banks", "bookkeeping", "reports", "master", "users", "activity", "settings"]);
 const VALID_DATE_FORMATS = new Set(["DD/MM/YYYY", "MM/DD/YYYY", "YYYY-MM-DD"]);
 const VALID_TIME_FORMATS = new Set(["12h", "24h"]);
 const VALID_TIMEZONES = new Set(["UTC", "Europe/London", "Europe/Berlin", "Europe/Moscow", "Europe/Paris", "Asia/Dubai", "Asia/Kolkata", "Asia/Singapore", "America/New_York", "America/Chicago", "America/Los_Angeles", "Australia/Sydney"]);
