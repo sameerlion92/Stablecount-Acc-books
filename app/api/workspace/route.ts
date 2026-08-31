@@ -190,7 +190,7 @@ export async function prepareDatabase() {
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
   const clientColumns=await db.prepare("PRAGMA table_info(clients)").all();
   const clientColumnNames=new Set(clientColumns.results.map(column=>String((column as Record<string,unknown>).name)));
-  const clientAdditions=["is_active INTEGER NOT NULL DEFAULT 1","website TEXT NOT NULL DEFAULT ''","contact_person TEXT NOT NULL DEFAULT ''","bank_account_number TEXT NOT NULL DEFAULT ''","beneficiary_name TEXT NOT NULL DEFAULT ''","bank_address TEXT NOT NULL DEFAULT ''","swift_code TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","commission_earned REAL NOT NULL DEFAULT 0","director_ceo_name TEXT NOT NULL DEFAULT ''","director_phone TEXT NOT NULL DEFAULT ''","director_email TEXT NOT NULL DEFAULT ''","contact_position TEXT NOT NULL DEFAULT ''","contact_email TEXT NOT NULL DEFAULT ''","contact_tel TEXT NOT NULL DEFAULT ''","contact_mob TEXT NOT NULL DEFAULT ''"];
+  const clientAdditions=["is_active INTEGER NOT NULL DEFAULT 1","website TEXT NOT NULL DEFAULT ''","contact_person TEXT NOT NULL DEFAULT ''","bank_account_number TEXT NOT NULL DEFAULT ''","beneficiary_name TEXT NOT NULL DEFAULT ''","bank_address TEXT NOT NULL DEFAULT ''","swift_code TEXT NOT NULL DEFAULT ''","ifsc_code TEXT NOT NULL DEFAULT ''","commission_earned REAL NOT NULL DEFAULT 0","director_ceo_name TEXT NOT NULL DEFAULT ''","director_phone TEXT NOT NULL DEFAULT ''","director_email TEXT NOT NULL DEFAULT ''","inn TEXT NOT NULL DEFAULT ''","kpp TEXT NOT NULL DEFAULT ''","ogrn TEXT NOT NULL DEFAULT ''","contact_position TEXT NOT NULL DEFAULT ''","contact_email TEXT NOT NULL DEFAULT ''","contact_tel TEXT NOT NULL DEFAULT ''","contact_mob TEXT NOT NULL DEFAULT ''"];
   for(const addition of clientAdditions){const name=addition.split(" ")[0];if(!clientColumnNames.has(name))await db.prepare(`ALTER TABLE clients ADD COLUMN ${addition}`).run();}
   const orderColumns=await db.prepare("PRAGMA table_info(orders)").all();
   const orderColumnNames=new Set(orderColumns.results.map(column=>String((column as Record<string,unknown>).name)));
@@ -355,6 +355,9 @@ function clientPayload(payload: Payload) {
     directorCeoName: String(payload.directorCeoName ?? ""),
     directorPhone: String(payload.directorPhone ?? ""),
     directorEmail: String(payload.directorEmail ?? ""),
+    inn: String(payload.inn ?? ""),
+    kpp: String(payload.kpp ?? ""),
+    ogrn: String(payload.ogrn ?? ""),
     contactPerson: String(payload.contactPerson ?? ""),
     contactPosition: String(payload.contactPosition ?? ""),
     contactEmail: String(payload.contactEmail ?? ""),
@@ -373,13 +376,13 @@ function clientPayload(payload: Payload) {
 }
 
 const CLIENT_INSERT_SQL = `INSERT INTO clients (
-  name,email,phone,address,country,website,director_ceo_name,director_phone,director_email,
+  name,email,phone,address,country,website,director_ceo_name,director_phone,director_email,inn,kpp,ogrn,
   contact_person,contact_position,contact_email,contact_tel,contact_mob,
   beneficiary_name,bank_name,bank_account_number,bank_address,currency,swift_code,ifsc_code,commission_earned,kind
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`;
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`;
 
 const CLIENT_UPDATE_SQL = `UPDATE clients SET
-  name=?,email=?,phone=?,address=?,country=?,website=?,director_ceo_name=?,director_phone=?,director_email=?,
+  name=?,email=?,phone=?,address=?,country=?,website=?,director_ceo_name=?,director_phone=?,director_email=?,inn=?,kpp=?,ogrn=?,
   contact_person=?,contact_position=?,contact_email=?,contact_tel=?,contact_mob=?,
   beneficiary_name=?,bank_name=?,bank_account_number=?,bank_address=?,currency=?,swift_code=?,ifsc_code=?,commission_earned=?,kind=?
 WHERE id=?`;
@@ -387,7 +390,7 @@ WHERE id=?`;
 function clientBindValues(values: ReturnType<typeof clientPayload>) {
   return [
     values.name, values.email, values.phone, values.address, values.country, values.website,
-    values.directorCeoName, values.directorPhone, values.directorEmail,
+    values.directorCeoName, values.directorPhone, values.directorEmail, values.inn, values.kpp, values.ogrn,
     values.contactPerson, values.contactPosition, values.contactEmail, values.contactTel, values.contactMob,
     values.beneficiaryName, values.bankName, values.bankAccountNumber, values.bankAddress,
     values.currency, values.swiftCode, values.ifscCode, values.commissionEarned, values.kind,

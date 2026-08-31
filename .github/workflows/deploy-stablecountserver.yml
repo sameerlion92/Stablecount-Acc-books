@@ -1,0 +1,55 @@
+name: Deploy stablecountserver
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "scripts/deploy-server.sh"
+      - "scripts/reset-workspace.sh"
+      - "package.json"
+      - "package-lock.json"
+      - "next.config.ts"
+      - "Dockerfile"
+      - "docker-compose.yml"
+
+jobs:
+  deploy:
+    if: github.repository == 'sameerlion92/Stablecount-Acc-books'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load SSH key
+        if: env.STABLECOUNT_SSH_PRIVATE_KEY != ''
+        env:
+          STABLECOUNT_SSH_PRIVATE_KEY: ${{ secrets.STABLECOUNT_SSH_PRIVATE_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$STABLECOUNT_SSH_PRIVATE_KEY" > ~/.ssh/stablecount_deploy
+          chmod 600 ~/.ssh/stablecount_deploy
+          ssh-keyscan -H "${STABLECOUNT_HOST:-100.96.241.115}" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy over Tailscale/SSH
+        if: secrets.STABLECOUNT_SSH_PRIVATE_KEY != ''
+        env:
+          STABLECOUNT_HOST: ${{ vars.STABLECOUNT_HOST || '100.96.241.115' }}
+          STABLECOUNT_USER: ${{ vars.STABLECOUNT_USER || 'stablecount' }}
+          STABLECOUNT_APP_DIR: ${{ vars.STABLECOUNT_APP_DIR || '/opt/stablecount-acc-books' }}
+          STABLECOUNT_DATA_DIR: ${{ vars.STABLECOUNT_DATA_DIR || '/var/lib/stablecount' }}
+          RESET_WORKSPACE: ${{ vars.RESET_WORKSPACE || 'false' }}
+        run: |
+          ssh -i ~/.ssh/stablecount_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+            "${STABLECOUNT_USER}@${STABLECOUNT_HOST}" bash -s <<EOF
+          set -euo pipefail
+          cd "${STABLECOUNT_APP_DIR}"
+          git fetch origin main
+          git reset --hard origin/main
+          npm ci
+          npm run build
+          if [ "${RESET_WORKSPACE}" = "true" ]; then
+            CONFIRM=RESET STABLECOUNT_DATA_DIR="${STABLECOUNT_DATA_DIR}" npm run reset-workspace
+          fi
+          sudo systemctl restart stablecount-acc-books || true
+          EOF
