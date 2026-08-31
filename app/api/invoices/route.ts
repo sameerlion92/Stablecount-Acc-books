@@ -45,10 +45,18 @@ async function buildInvoiceDocument(
     footerImageRaw ? resolveInvoiceImageDataUri(footerImageRaw, "") : Promise.resolve(""),
   ]);
 
+  const invoiceKind = String(invoice.invoice_kind || "commercial") === "proforma" ? "proforma" : "commercial";
+  const direction = String(invoice.direction || "sale");
+  const templateTitle = String(field(snapshot, invoice, "title", "current_title", direction === "purchase" ? "BILL" : "INVOICE"));
+  const title = invoiceKind === "proforma"
+    ? (direction === "purchase" ? "PROFORMA BILL" : "PROFORMA INVOICE")
+    : templateTitle;
+
   return {
     invoiceNo: String(invoice.invoice_no || ""),
-    direction: String(invoice.direction || "sale"),
-    title: String(field(snapshot, invoice, "title", "current_title", invoice.direction === "purchase" ? "BILL" : "INVOICE")),
+    invoiceKind,
+    direction,
+    title,
     accentColor: accent,
     headerText: String(field(snapshot, invoice, "header_text", "current_header_text", "")).trim(),
     sellerName: String(field(snapshot, invoice, "seller_name", "current_seller_name", "StableCount")),

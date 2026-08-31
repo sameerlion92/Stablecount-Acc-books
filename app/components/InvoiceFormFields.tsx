@@ -66,13 +66,15 @@ export function InvoiceFormFields({
   const [clientId, setClientId] = useState(String(editingInvoice?.client_id || ""));
   const [orderId, setOrderId] = useState(String(editingInvoice?.order_id || ""));
   const [invoiceCurrency, setInvoiceCurrency] = useState(String(editingInvoice?.currency || defaultInvoiceCurrency));
+  const [invoiceKind, setInvoiceKind] = useState(String(editingInvoice?.invoice_kind || "commercial"));
 
   useEffect(() => {
     setTemplateId(String(editingInvoice?.template_id || ""));
     setClientId(String(editingInvoice?.client_id || ""));
     setOrderId(String(editingInvoice?.order_id || ""));
     setInvoiceCurrency(String(editingInvoice?.currency || defaultInvoiceCurrency));
-  }, [editingInvoice?.id, editingInvoice?.template_id, editingInvoice?.client_id, editingInvoice?.order_id, editingInvoice?.currency, defaultInvoiceCurrency]);
+    setInvoiceKind(String(editingInvoice?.invoice_kind || "commercial"));
+  }, [editingInvoice?.id, editingInvoice?.template_id, editingInvoice?.client_id, editingInvoice?.order_id, editingInvoice?.currency, editingInvoice?.invoice_kind, defaultInvoiceCurrency]);
 
   const selectedTemplate = data.invoiceTemplates.find((row) => row.id === Number(templateId)) || null;
   const direction = String(selectedTemplate?.direction || "sale") === "purchase" ? "purchase" : "sale";
@@ -109,6 +111,29 @@ export function InvoiceFormFields({
             <option key={row.id} value={row.id}>{row.name}</option>
           ))}
         </select>
+      </label>
+      <label>
+        {t("Invoice type")}
+        <select name="invoiceKind" required value={invoiceKind} onChange={(event) => setInvoiceKind(event.target.value)}>
+          <option value="commercial">{t("Commercial invoice")}</option>
+          <option value="proforma">{t("Proforma invoice")}</option>
+        </select>
+      </label>
+      <label>
+        {t("Invoice number")}
+        <input
+          name="invoiceNo"
+          defaultValue={editingInvoice?.invoice_no == null ? "" : String(editingInvoice.invoice_no)}
+          placeholder={selectedTemplate ? `${String(selectedTemplate.number_prefix || "INV")}-0001` : t("Leave blank to auto-number")}
+        />
+      </label>
+      <label>
+        {t("Invoice date")}
+        <input name="issueDate" type="date" required defaultValue={String(editingInvoice?.issue_date || today)} />
+      </label>
+      <label>
+        {t("Due date")}
+        <input name="dueDate" type="date" required defaultValue={String(editingInvoice?.due_date || today)} />
       </label>
       <label>
         {direction === "purchase" ? t("Supplier") : t("Client")}
@@ -171,14 +196,6 @@ export function InvoiceFormFields({
         initialLines={buildInvoiceLines(editingInvoice?.id, data.invoiceItems, editingInvoice)}
         currency={invoiceCurrency}
       />
-      <label>
-        {t("Issue date")}
-        <input name="issueDate" type="date" required defaultValue={String(editingInvoice?.issue_date || today)} />
-      </label>
-      <label>
-        {t("Due date")}
-        <input name="dueDate" type="date" required defaultValue={String(editingInvoice?.due_date || today)} />
-      </label>
       <label>
         {t("Tax rate %")}
         <input name="taxRate" type="number" step="any" defaultValue={editingInvoice?.tax_rate == null ? "" : String(editingInvoice.tax_rate)} />

@@ -80,6 +80,60 @@ async function nextInvoiceNumber(db: SqlDatabase, prefix: string) {
   return `${likePrefix}${String(next).padStart(4, "0")}`;
 }
 
+async function resolveInvoiceNumber(db: SqlDatabase, payload: Record<string, unknown>, template: Record<string, unknown>, excludeId = 0) {
+  const custom = String(payload.invoiceNo ?? "").trim();
+  if (custom) {
+    const existing = await db.prepare("SELECT id FROM invoices WHERE invoice_no=? AND id!=?").bind(custom, excludeId).first<{ id: number }>();
+    if (existing) throw new Error("Invoice number already in use");
+    return custom;
+  }
+  if (excludeId) {
+    const current = await db.prepare("SELECT invoice_no FROM invoices WHERE id=?").bind(excludeId).first<{ invoice_no: string }>();
+    if (current?.invoice_no) return String(current.invoice_no);
+  }
+  return nextInvoiceNumber(db, String(template.number_prefix));
+}
+
+function invoiceKindFromPayload(payload: Record<string, unknown>) {
+  return String(payload.invoiceKind ?? "commercial") === "proforma" ? "proforma" : "commercial";
+}
+
+async function writeInvoiceJournal(db: SqlDatabase, input: { issueDate: string; direction: string; invoiceId: number; invoiceNo: string; total: number; clientId: number }) {
+  const entry = await db.prepare("INSERT INTO journal_entries (entry_date,reference_type,reference_id,memo) VALUES (?,?,?,?) RETURNING id").bind(input.issueDate, input.direction === "sale" ? "invoice" : "bill", input.invoiceId, `${input.direction === "sale" ? "Sale" : "Purchase"}: ${input.invoiceNo}`).first<{ id: number }>();
+  if (!entry) throw new Error("Journal entry could not be created");
+  await db.batch(input.direction === "sale" ? [
+    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "1100", "Accounts receivable", input.total, 0, input.clientId),
+    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "4000", "Sales invoices", 0, input.total, input.clientId),
+  ] : [
+    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "5000", "Purchase bills", input.total, 0, input.clientId),
+    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "2000", "Accounts payable", 0, input.total, input.clientId),
+  ]);
+}
+
+async function syncInvoiceJournal(db: SqlDatabase, input: { invoiceId: number; isCommercial: boolean; issueDate: string; direction: string; invoiceNo: string; total: number; clientId: number }) {
+  const entry = await db.prepare("SELECT id FROM journal_entries WHERE reference_type IN ('invoice','bill') AND reference_id=? LIMIT 1").bind(input.invoiceId).first<{ id: number }>();
+  if (!input.isCommercial) {
+    if (entry) {
+      await db.prepare("DELETE FROM journal_lines WHERE entry_id=?").bind(entry.id).run();
+      await db.prepare("DELETE FROM journal_entries WHERE id=?").bind(entry.id).run();
+    }
+    return;
+  }
+  if (entry) {
+    await db.prepare("UPDATE journal_entries SET entry_date=?,reference_type=?,memo=? WHERE id=?").bind(input.issueDate, input.direction === "sale" ? "invoice" : "bill", `${input.direction === "sale" ? "Sale" : "Purchase"}: ${input.invoiceNo}`, entry.id).run();
+    await db.prepare("DELETE FROM journal_lines WHERE entry_id=?").bind(entry.id).run();
+    await db.batch(input.direction === "sale" ? [
+      db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "1100", "Accounts receivable", input.total, 0, input.clientId),
+      db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "4000", "Sales invoices", 0, input.total, input.clientId),
+    ] : [
+      db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "5000", "Purchase bills", input.total, 0, input.clientId),
+      db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id, "2000", "Accounts payable", 0, input.total, input.clientId),
+    ]);
+    return;
+  }
+  await writeInvoiceJournal(db, input);
+}
+
 type InvoiceLineItem = { description: string; quantity: number; unitPrice: number };
 
 function parseLineItems(payload: Record<string, unknown>): InvoiceLineItem[] {
@@ -211,6 +265,8 @@ export async function prepareDatabase() {
   const invoiceColumnNames=new Set(invoiceColumns.results.map(column=>String((column as Record<string,unknown>).name)));
   const invoiceAdditions=["template_id INTEGER REFERENCES invoice_templates(id)","tax_rate REAL NOT NULL DEFAULT 0","tax_amount REAL NOT NULL DEFAULT 0","discount_amount REAL NOT NULL DEFAULT 0","shipping_amount REAL NOT NULL DEFAULT 0","reference TEXT NOT NULL DEFAULT ''","template_snapshot TEXT NOT NULL DEFAULT '{}'"];
   for(const addition of invoiceAdditions){const name=addition.split(" ")[0];if(!invoiceColumnNames.has(name))await db.prepare(`ALTER TABLE invoices ADD COLUMN ${addition}`).run();}
+  const invoiceKindColumns=await db.prepare("PRAGMA table_info(invoices)").all();
+  if(!invoiceKindColumns.results.some(column=>String((column as Record<string,unknown>).name)==="invoice_kind"))await db.prepare("ALTER TABLE invoices ADD COLUMN invoice_kind TEXT NOT NULL DEFAULT 'commercial'").run();
   const templateColumns=await db.prepare("PRAGMA table_info(invoice_templates)").all();
   const templateColumnNames=new Set(templateColumns.results.map(column=>String((column as Record<string,unknown>).name)));
   const templateAdditions=["header_text TEXT NOT NULL DEFAULT ''","header_image_url TEXT NOT NULL DEFAULT ''","footer_image_url TEXT NOT NULL DEFAULT ''"];
@@ -292,7 +348,7 @@ async function snapshot(actor: Actor) {
     ? db.prepare("SELECT a.id,a.user_id,a.action,a.entity_type,a.entity_id,a.description,a.details_json,a.created_at,u.display_name,u.email,u.role FROM audit_log a JOIN app_users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 500").all()
     : Promise.resolve({ results: [] });
   const [clients, banks, orders, shipments, invoices, invoiceItems, journal, users, activity, rates, documents, partyLinks, invoiceTemplates, clientAssignments] = await Promise.all([
-    db.prepare(`SELECT c.*, COALESCE(SUM(CASE WHEN i.direction='sale' AND i.status NOT IN ('Cancelled') THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='in'),0) AS receivable, COALESCE(SUM(CASE WHEN i.direction='purchase' AND i.status NOT IN ('Cancelled') THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='out'),0) AS payable FROM clients c LEFT JOIN invoices i ON i.client_id=c.id WHERE c.is_active=1 GROUP BY c.id ORDER BY c.name`).all(),
+    db.prepare(`SELECT c.*, COALESCE(SUM(CASE WHEN i.direction='sale' AND i.status NOT IN ('Cancelled') AND COALESCE(i.invoice_kind,'commercial')='commercial' THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='in'),0) AS receivable, COALESCE(SUM(CASE WHEN i.direction='purchase' AND i.status NOT IN ('Cancelled') AND COALESCE(i.invoice_kind,'commercial')='commercial' THEN i.total ELSE 0 END),0)-COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.client_id=c.id AND p.direction='out'),0) AS payable FROM clients c LEFT JOIN invoices i ON i.client_id=c.id WHERE c.is_active=1 GROUP BY c.id ORDER BY c.name`).all(),
     db.prepare("SELECT * FROM bank_accounts WHERE is_active=1 ORDER BY is_default DESC, nickname").all(),
     db.prepare("SELECT o.*, c.name AS client_name, s.name AS supplier_name FROM orders o JOIN clients c ON c.id=o.client_id LEFT JOIN clients s ON s.id=o.supplier_id ORDER BY o.id DESC").all(),
     db.prepare("SELECT s.*, o.order_no, c.id AS client_id, c.name AS client_name FROM shipments s JOIN orders o ON o.id=s.order_id JOIN clients c ON c.id=o.client_id ORDER BY s.id DESC").all(),
@@ -643,18 +699,22 @@ export async function POST(request: Request) {
       const lines=parseLineItems(payload);const subtotal=lineItemsSubtotal(lines);const taxRate=Number(payload.taxRate??0);const taxAmount=subtotal*taxRate/100;const discount=Number(payload.discountAmount??0);const shipping=Number(payload.shippingAmount??0);const total=subtotal+taxAmount-discount+shipping;
       if(!Number.isFinite(total)||total<=0)throw new Error("Invoice total must be greater than zero");if(taxRate<0||taxRate>100)throw new Error("Tax rate must be between 0 and 100");
       const templateSnapshot=JSON.stringify(template);
+      const invoiceKind=invoiceKindFromPayload(payload);
+      const isCommercial=invoiceKind==="commercial";
+      const issueDate=required(payload,"issueDate");
       if(payload.action==="invoice"){
-        const invoiceNo=await nextInvoiceNumber(db,String(template.number_prefix));
-        const invoice=await db.prepare("INSERT INTO invoices (invoice_no,client_id,bank_account_id,order_id,template_id,direction,issue_date,due_date,currency,subtotal,tax_rate,tax_amount,discount_amount,shipping_amount,total,reference,status,notes,template_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(invoiceNo,clientId,bankAccountId,order?.id??null,template.id,direction,required(payload,"issueDate"),required(payload,"dueDate"),String(payload.currency??"RUB"),subtotal,taxRate,taxAmount,discount,shipping,total,String(payload.reference??""),"Sent",String(payload.notes??""),templateSnapshot).first<{id:number}>();
+        const invoiceNo=await resolveInvoiceNumber(db,payload,template);
+        const status=isCommercial?"Sent":"Proforma";
+        const invoice=await db.prepare("INSERT INTO invoices (invoice_no,client_id,bank_account_id,order_id,template_id,direction,invoice_kind,issue_date,due_date,currency,subtotal,tax_rate,tax_amount,discount_amount,shipping_amount,total,reference,status,notes,template_snapshot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(invoiceNo,clientId,bankAccountId,order?.id??null,template.id,direction,invoiceKind,issueDate,required(payload,"dueDate"),String(payload.currency??"RUB"),subtotal,taxRate,taxAmount,discount,shipping,total,String(payload.reference??""),status,String(payload.notes??""),templateSnapshot).first<{id:number}>();
         if(!invoice)throw new Error("Invoice could not be created");await saveInvoiceItems(db,invoice.id,lines);
-        const entry=await db.prepare("INSERT INTO journal_entries (entry_date,reference_type,reference_id,memo) VALUES (?,?,?,?) RETURNING id").bind(required(payload,"issueDate"),direction==="sale"?"invoice":"bill",invoice.id,`${direction==="sale"?"Sale":"Purchase"}: ${invoiceNo}`).first<{id:number}>();if(!entry)throw new Error("Journal entry could not be created");
-        await db.batch(direction==="sale"?[db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"1100","Accounts receivable",total,0,clientId),db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"4000","Sales invoices",0,total,clientId)]:[db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"5000","Purchase bills",total,0,clientId),db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"2000","Accounts payable",0,total,clientId)]);
-        await audit(actor,"created",direction==="sale"?"invoice":"bill",invoice.id,`${actor.displayName} generated ${invoiceNo}${order?` for order ${order.id}`:""}`,{clientId,orderId:order?.id??null,templateId:template.id,total,currency:payload.currency});
+        if(isCommercial)await writeInvoiceJournal(db,{issueDate,direction,invoiceId:invoice.id,invoiceNo,total,clientId});
+        await audit(actor,"created",direction==="sale"?"invoice":"bill",invoice.id,`${actor.displayName} generated ${invoiceNo}${order?` for order ${order.id}`:""}`,{clientId,orderId:order?.id??null,templateId:template.id,total,currency:payload.currency,invoiceKind});
       }else{
         if(actor.role==="operator")return Response.json({error:"Only the Super Admin and Level 1 can edit invoices"},{status:403});const invoiceId=Number(payload.invoiceId);const before=await db.prepare("SELECT * FROM invoices WHERE id=?").bind(invoiceId).first<Record<string,unknown>>();if(!before)throw new Error("Invoice not found");if(String(before.status)==="Paid")throw new Error("Paid invoices cannot be edited");
-        await db.prepare("UPDATE invoices SET client_id=?,bank_account_id=?,order_id=?,template_id=?,direction=?,issue_date=?,due_date=?,currency=?,subtotal=?,tax_rate=?,tax_amount=?,discount_amount=?,shipping_amount=?,total=?,reference=?,notes=?,template_snapshot=? WHERE id=?").bind(clientId,bankAccountId,order?.id??null,template.id,direction,required(payload,"issueDate"),required(payload,"dueDate"),String(payload.currency??"RUB"),subtotal,taxRate,taxAmount,discount,shipping,total,String(payload.reference??""),String(payload.notes??""),templateSnapshot,invoiceId).run();await saveInvoiceItems(db,invoiceId,lines);
-        const entry=await db.prepare("SELECT id FROM journal_entries WHERE reference_type IN ('invoice','bill') AND reference_id=? LIMIT 1").bind(invoiceId).first<{id:number}>();if(entry){await db.prepare("UPDATE journal_entries SET entry_date=?,reference_type=?,memo=? WHERE id=?").bind(required(payload,"issueDate"),direction==="sale"?"invoice":"bill",`${direction==="sale"?"Sale":"Purchase"}: ${before.invoice_no}`,entry.id).run();await db.prepare("DELETE FROM journal_lines WHERE entry_id=?").bind(entry.id).run();await db.batch(direction==="sale"?[db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"1100","Accounts receivable",total,0,clientId),db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"4000","Sales invoices",0,total,clientId)]:[db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"5000","Purchase bills",total,0,clientId),db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"2000","Accounts payable",0,total,clientId)]);}
-        await audit(actor,"updated","invoice",invoiceId,`${actor.displayName} edited invoice ${before.invoice_no}`,{before,total,orderId:order?.id??null,templateId:template.id});
+        const invoiceNo=await resolveInvoiceNumber(db,payload,template,invoiceId);
+        await db.prepare("UPDATE invoices SET invoice_no=?,client_id=?,bank_account_id=?,order_id=?,template_id=?,direction=?,invoice_kind=?,issue_date=?,due_date=?,currency=?,subtotal=?,tax_rate=?,tax_amount=?,discount_amount=?,shipping_amount=?,total=?,reference=?,notes=?,template_snapshot=? WHERE id=?").bind(invoiceNo,clientId,bankAccountId,order?.id??null,template.id,direction,invoiceKind,issueDate,required(payload,"dueDate"),String(payload.currency??"RUB"),subtotal,taxRate,taxAmount,discount,shipping,total,String(payload.reference??""),String(payload.notes??""),templateSnapshot,invoiceId).run();await saveInvoiceItems(db,invoiceId,lines);
+        await syncInvoiceJournal(db,{invoiceId,isCommercial,issueDate,direction,invoiceNo,total,clientId});
+        await audit(actor,"updated","invoice",invoiceId,`${actor.displayName} edited invoice ${invoiceNo}`,{before,total,orderId:order?.id??null,templateId:template.id,invoiceKind});
       }
     } else if (payload.action === "payment") {
       const invoice = await db.prepare("SELECT * FROM invoices WHERE id=?").bind(Number(payload.invoiceId)).first<Record<string,unknown>>();
@@ -662,6 +722,7 @@ export async function POST(request: Request) {
       await assertOperatorClientAccess(db, actor, Number(invoice.client_id));
       if (String(invoice.status) === "Paid") throw new Error("This invoice is already paid");
       if (String(invoice.status) === "Cancelled") throw new Error("Cancelled invoices cannot receive payments");
+      if (String(invoice.invoice_kind || "commercial") === "proforma") throw new Error("Proforma invoices cannot receive payments");
       const amount = Number(payload.amount??invoice.total);
       if (!Number.isFinite(amount) || amount <= 0) throw new Error("Payment amount must be greater than zero");
       const paidRow = await db.prepare("SELECT COALESCE(SUM(amount),0) AS paid FROM payments WHERE invoice_id=?").bind(invoice.id).first<{paid:number}>();
