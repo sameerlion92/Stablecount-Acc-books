@@ -140,86 +140,155 @@ export function buildInvoiceHtml(doc: InvoiceDocument, options?: { showActions?:
   </style></head><body>${showActions ? '<div class="actions"><button onclick="window.print()">Print / Save PDF</button></div>' : ""}<main class="sheet">${headerBlock}<section class="top">${logoBlock}<div class="title"><h1>${esc(doc.title)}</h1><b>${esc(doc.invoiceNo)}</b><small>${esc(kindLabel)}</small></div></section><section class="grid"><div><p class="label">From</p><h2>${esc(doc.sellerName)}</h2><p class="address">${esc(doc.sellerAddress)}\n${esc(doc.sellerEmail)}\n${esc(doc.sellerPhone)}</p></div><div><p class="label">Bill to</p><h2>${esc(doc.clientName)}</h2><p class="address">${esc(doc.clientAddress)}\n${esc(doc.clientContact)}\n${esc(doc.clientEmail)}\n${esc(doc.clientPhone)}</p><div class="meta"><span>Invoice date<b>${esc(doc.issueDate)}</b></span><span>Due date<b>${esc(doc.dueDate)}</b></span><span>Order<b>${esc(doc.orderNo || "—")}</b></span><span>Reference<b>${esc(doc.reference || "—")}</b></span></div></div></section><table><thead><tr><th>Description</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>${lineRows}</tbody></table><section class="totals"><p><span>Subtotal</span><b>${amount(doc.subtotal, doc.currency)}</b></p><p><span>Tax (${esc(doc.taxRate)}%)</span><b>${amount(doc.taxAmount, doc.currency)}</b></p><p><span>Discount</span><b>− ${amount(doc.discountAmount, doc.currency)}</b></p><p><span>Shipping</span><b>${amount(doc.shippingAmount, doc.currency)}</b></p><p class="grand"><span>Total</span><b>${amount(doc.total, doc.currency)}</b></p></section><section class="details"><div><p class="label">${esc(doc.partyBankLabel)}</p><p>${clientBankHtml}</p><p class="label">${esc(doc.companyBankLabel)}</p><p>${companyBankHtml}</p><p class="label">Tax registration</p><p>${esc(doc.taxRegistration || "Not specified")}</p></div><div><p class="label">Payment terms</p><p>${esc(doc.paymentTerms)}</p><p class="label">Notes</p><p>${esc(doc.notes || "—")}</p>${customHtml}</div></section>${footerBlock}</main></body></html>`;
 }
 
-function writeWrappedText(pdf: import("jspdf").jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight = 12) {
-  const lines = pdf.splitTextToSize(text, maxWidth);
+function writeWrappedText(pdf: import("jspdf").jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight = 11) {
+  const clean = String(text ?? "").trim();
+  if (!clean) return y;
+  const lines = pdf.splitTextToSize(clean, maxWidth);
   pdf.text(lines, x, y);
   return y + lines.length * lineHeight;
+}
+
+function drawLabel(pdf: import("jspdf").jsPDF, text: string, x: number, y: number) {
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(8);
+  pdf.setTextColor(111, 131, 139);
+  pdf.text(String(text).toUpperCase(), x, y);
+  return y + 13;
+}
+
+function drawHeading(pdf: import("jspdf").jsPDF, text: string, x: number, y: number, maxWidth: number) {
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(11);
+  pdf.setTextColor(23, 55, 68);
+  const lines = pdf.splitTextToSize(String(text || "—"), maxWidth);
+  pdf.text(lines, x, y);
+  return y + lines.length * 13;
+}
+
+function drawBodyText(pdf: import("jspdf").jsPDF, text: string, x: number, y: number, maxWidth: number) {
+  pdf.setFont("helvetica", "normal");
+  pdf.setFontSize(9.5);
+  pdf.setTextColor(60, 80, 88);
+  return writeWrappedText(pdf, text, x, y, maxWidth, 11);
+}
+
+type PdfLayout = {
+  margin: number;
+  pageWidth: number;
+  pageHeight: number;
+  contentWidth: number;
+  columnGap: number;
+  columnWidth: number;
+  rightColumnX: number;
+};
+
+function createPdfLayout(pdf: import("jspdf").jsPDF): PdfLayout {
+  const margin = 48;
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
+  const columnGap = 22;
+  const contentWidth = pageWidth - margin * 2;
+  const columnWidth = (contentWidth - columnGap) / 2;
+  return {
+    margin,
+    pageWidth,
+    pageHeight,
+    contentWidth,
+    columnGap,
+    columnWidth,
+    rightColumnX: margin + columnWidth + columnGap,
+  };
+}
+
+function ensurePageSpace(pdf: import("jspdf").jsPDF, layout: PdfLayout, y: number, needed: number) {
+  if (y + needed <= layout.pageHeight - layout.margin) return y;
+  pdf.addPage();
+  return layout.margin;
 }
 
 export async function buildInvoicePdf(doc: InvoiceDocument) {
   const { default: jsPDF } = await import("jspdf");
   const { default: autoTable } = await import("jspdf-autotable");
   const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
-  const margin = 42;
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const contentWidth = pageWidth - margin * 2;
+  const layout = createPdfLayout(pdf);
   const accent = accentRgb(doc.accentColor);
+  const { margin, pageWidth, contentWidth, columnWidth, rightColumnX } = layout;
   let y = margin;
 
+  const headerBottom = margin + 54;
   if (doc.logoDataUri) {
     try {
-      pdf.addImage(doc.logoDataUri, imageFormat(doc.logoDataUri), margin, y, 150, 42);
+      pdf.addImage(doc.logoDataUri, imageFormat(doc.logoDataUri), margin, y, 138, 38);
     } catch {
       /* skip broken logo */
     }
   }
 
   pdf.setTextColor(accent[0], accent[1], accent[2]);
-  pdf.setFontSize(24);
-  pdf.text(doc.title, pageWidth - margin, y + 18, { align: "right" });
-  pdf.setFontSize(11);
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(22);
+  pdf.text(doc.title, pageWidth - margin, y + 16, { align: "right", maxWidth: columnWidth + 40 });
+  pdf.setFontSize(10);
   pdf.setTextColor(40, 40, 40);
-  pdf.text(doc.invoiceNo, pageWidth - margin, y + 36, { align: "right" });
-  pdf.setFontSize(9);
+  pdf.text(doc.invoiceNo, pageWidth - margin, y + 34, { align: "right" });
+  pdf.setFont("helvetica", "bold");
+  pdf.setFontSize(8);
   pdf.setTextColor(111, 131, 139);
-  pdf.text(doc.invoiceKind === "proforma" ? "PROFORMA" : "COMMERCIAL", pageWidth - margin, y + 50, { align: "right" });
-  y += 58;
+  pdf.text(doc.invoiceKind === "proforma" ? "PROFORMA" : "COMMERCIAL", pageWidth - margin, y + 48, { align: "right" });
+  y = headerBottom;
 
   pdf.setDrawColor(accent[0], accent[1], accent[2]);
   pdf.setLineWidth(2);
   pdf.line(margin, y, pageWidth - margin, y);
-  y += 24;
+  y += 22;
 
   if (doc.headerText.trim()) {
-    pdf.setFontSize(10);
+    y = ensurePageSpace(pdf, layout, y, 40);
+    pdf.setFillColor(247, 250, 251);
+    pdf.setDrawColor(220, 229, 232);
+    const headerLines = pdf.splitTextToSize(doc.headerText, contentWidth - 24);
+    const boxHeight = headerLines.length * 11 + 18;
+    pdf.roundedRect(margin, y - 10, contentWidth, boxHeight, 4, 4, "FD");
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(9.5);
     pdf.setTextColor(53, 81, 93);
-    y = writeWrappedText(pdf, doc.headerText, margin, y, contentWidth, 12) + 8;
+    pdf.text(headerLines, margin + 12, y + 2);
+    y += boxHeight + 8;
   }
 
-  const columnWidth = (contentWidth - 24) / 2;
-  pdf.setFontSize(9);
-  pdf.setTextColor(111, 131, 139);
-  pdf.text("FROM", margin, y);
-  pdf.text("BILL TO", margin + columnWidth + 24, y);
-  y += 14;
-
-  pdf.setFontSize(12);
-  pdf.setTextColor(23, 55, 68);
-  pdf.text(doc.sellerName, margin, y);
-  pdf.text(doc.clientName, margin + columnWidth + 24, y);
-  y += 16;
-
-  pdf.setFontSize(10);
-  pdf.setTextColor(60, 80, 88);
-  const fromLines = joinLines([doc.sellerAddress, doc.sellerEmail, doc.sellerPhone]);
-  const billLines = joinLines([doc.clientAddress, doc.clientContact, doc.clientEmail, doc.clientPhone]);
-  const fromHeight = pdf.splitTextToSize(fromLines, columnWidth).length * 12;
-  const billHeight = pdf.splitTextToSize(billLines, columnWidth).length * 12;
-  writeWrappedText(pdf, fromLines, margin, y, columnWidth, 12);
-  writeWrappedText(pdf, billLines, margin + columnWidth + 24, y, columnWidth, 12);
-  y += Math.max(fromHeight, billHeight) + 16;
-
-  pdf.setFontSize(9);
-  pdf.setTextColor(80, 96, 104);
-  pdf.text(`Invoice date: ${doc.issueDate}`, margin, y);
-  pdf.text(`Due date: ${doc.dueDate}`, margin + 150, y);
-  pdf.text(`Order: ${doc.orderNo || "—"}`, margin + 300, y);
-  y += 14;
-  pdf.text(`Reference: ${doc.reference || "—"}`, margin, y);
-  y += 18;
+  y = ensurePageSpace(pdf, layout, y, 120);
+  let leftY = drawLabel(pdf, "From", margin, y);
+  let rightY = drawLabel(pdf, "Bill to", rightColumnX, y);
+  leftY = drawHeading(pdf, doc.sellerName, margin, leftY, columnWidth);
+  rightY = drawHeading(pdf, doc.clientName, rightColumnX, rightY, columnWidth);
+  leftY = drawBodyText(pdf, joinLines([doc.sellerAddress, doc.sellerEmail, doc.sellerPhone]), margin, leftY, columnWidth);
+  rightY = drawBodyText(pdf, joinLines([doc.clientAddress, doc.clientContact, doc.clientEmail, doc.clientPhone]), rightColumnX, rightY, columnWidth);
 
   autoTable(pdf, {
+    startY: rightY + 4,
+    margin: { left: rightColumnX, right: margin },
+    tableWidth: columnWidth,
+    theme: "grid",
+    styles: { fontSize: 8.5, cellPadding: 5, lineColor: [220, 229, 232], lineWidth: 0.5, textColor: [60, 80, 88] },
+    body: [
+      ["Invoice date", doc.issueDate],
+      ["Due date", doc.dueDate],
+      ["Order", doc.orderNo || "—"],
+      ["Reference", doc.reference || "—"],
+    ],
+    columnStyles: {
+      0: { cellWidth: columnWidth * 0.42, fontStyle: "bold", fillColor: [244, 248, 249] },
+      1: { cellWidth: columnWidth * 0.58 },
+    },
+  });
+  const metaFinalY = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? rightY;
+  y = Math.max(leftY, metaFinalY) + 18;
+
+  y = ensurePageSpace(pdf, layout, y, 80);
+  autoTable(pdf, {
     startY: y,
+    margin: { left: margin, right: margin },
+    tableWidth: contentWidth,
     head: [["Description", "Qty", "Unit price", "Amount"]],
     body: doc.lineItems.map((item) => [
       item.description,
@@ -227,69 +296,85 @@ export async function buildInvoicePdf(doc: InvoiceDocument) {
       amount(item.unitPrice, doc.currency),
       amount(item.amount, doc.currency),
     ]),
-    styles: { fontSize: 9, cellPadding: 6 },
-    headStyles: { fillColor: accent, textColor: [255, 255, 255] },
+    styles: { fontSize: 9, cellPadding: 7, overflow: "linebreak", valign: "top", textColor: [23, 55, 68] },
+    headStyles: { fillColor: accent, textColor: [255, 255, 255], fontStyle: "bold", halign: "left" },
     columnStyles: {
-      1: { halign: "right" },
-      2: { halign: "right" },
-      3: { halign: "right" },
+      0: { cellWidth: contentWidth * 0.48 },
+      1: { cellWidth: contentWidth * 0.10, halign: "right" },
+      2: { cellWidth: contentWidth * 0.21, halign: "right" },
+      3: { cellWidth: contentWidth * 0.21, halign: "right" },
     },
-    margin: { left: margin, right: margin },
+    alternateRowStyles: { fillColor: [249, 251, 252] },
   });
+  y = ((pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 16;
 
+  y = ensurePageSpace(pdf, layout, y, 110);
+  const totalsWidth = 220;
+  autoTable(pdf, {
+    startY: y,
+    margin: { left: pageWidth - margin - totalsWidth, right: margin },
+    tableWidth: totalsWidth,
+    theme: "plain",
+    body: [
+      ["Subtotal", amount(doc.subtotal, doc.currency)],
+      [`Tax (${doc.taxRate}%)`, amount(doc.taxAmount, doc.currency)],
+      ["Discount", `− ${amount(doc.discountAmount, doc.currency)}`],
+      ["Shipping", amount(doc.shippingAmount, doc.currency)],
+      ["Total", amount(doc.total, doc.currency)],
+    ],
+    styles: { fontSize: 9.5, cellPadding: { top: 4, bottom: 4, left: 0, right: 0 }, textColor: [60, 80, 88] },
+    columnStyles: {
+      0: { cellWidth: totalsWidth * 0.55, halign: "left" },
+      1: { cellWidth: totalsWidth * 0.45, halign: "right" },
+    },
+    didParseCell(data) {
+      if (data.section === "body" && data.row.index === 4) {
+        data.cell.styles.fontStyle = "bold";
+        data.cell.styles.fontSize = 11;
+        data.cell.styles.textColor = accent;
+      }
+    },
+  });
   y = ((pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 18;
-  const totalsX = pageWidth - margin - 180;
-  const totals = [
-    ["Subtotal", amount(doc.subtotal, doc.currency)],
-    [`Tax (${doc.taxRate}%)`, amount(doc.taxAmount, doc.currency)],
-    ["Discount", `− ${amount(doc.discountAmount, doc.currency)}`],
-    ["Shipping", amount(doc.shippingAmount, doc.currency)],
-    ["Total", amount(doc.total, doc.currency)],
-  ];
-  pdf.setFontSize(10);
-  for (const [label, value] of totals) {
-    pdf.setTextColor(80, 96, 104);
-    pdf.text(label, totalsX, y);
-    pdf.setTextColor(label === "Total" ? accent[0] : 23, label === "Total" ? accent[1] : 55, label === "Total" ? accent[2] : 68);
-    pdf.text(value, pageWidth - margin, y, { align: "right" });
-    y += label === "Total" ? 18 : 14;
-  }
 
-  y += 10;
+  y = ensurePageSpace(pdf, layout, y, 120);
   pdf.setDrawColor(220, 226, 232);
   pdf.setLineWidth(1);
   pdf.line(margin, y, pageWidth - margin, y);
   y += 18;
 
-  pdf.setFontSize(9);
-  pdf.setTextColor(111, 131, 139);
-  pdf.text(doc.partyBankLabel.toUpperCase(), margin, y);
-  pdf.text("PAYMENT TERMS", margin + columnWidth + 24, y);
-  y += 14;
-  pdf.setFontSize(10);
-  pdf.setTextColor(60, 80, 88);
-  const clientBank = joinLines(doc.clientBankLines) || "—";
-  const paymentTerms = doc.paymentTerms || "—";
-  const leftHeight = pdf.splitTextToSize(clientBank, columnWidth).length * 12;
-  const rightHeight = pdf.splitTextToSize(paymentTerms, columnWidth).length * 12;
-  writeWrappedText(pdf, clientBank, margin, y, columnWidth, 12);
-  writeWrappedText(pdf, paymentTerms, margin + columnWidth + 24, y, columnWidth, 12);
-  y += Math.max(leftHeight, rightHeight) + 16;
+  const drawDetailBlock = (title: string, body: string, x: number, startY: number) => {
+    let blockY = drawLabel(pdf, title, x, startY);
+    blockY = drawBodyText(pdf, body, x, blockY, columnWidth);
+    return blockY;
+  };
 
-  pdf.setFontSize(9);
-  pdf.setTextColor(111, 131, 139);
-  pdf.text(doc.companyBankLabel.toUpperCase(), margin, y);
-  pdf.text("NOTES", margin + columnWidth + 24, y);
-  y += 14;
-  pdf.setFontSize(10);
-  pdf.setTextColor(60, 80, 88);
-  writeWrappedText(pdf, joinLines(doc.companyBankLines) || "—", margin, y, columnWidth, 12);
-  writeWrappedText(pdf, doc.notes || "—", margin + columnWidth + 24, y, columnWidth, 12);
+  let detailLeftY = drawDetailBlock(doc.partyBankLabel, joinLines(doc.clientBankLines) || "—", margin, y);
+  let detailRightY = drawDetailBlock("Payment terms", doc.paymentTerms || "—", rightColumnX, y);
+  y = Math.max(detailLeftY, detailRightY) + 14;
+
+  y = ensurePageSpace(pdf, layout, y, 80);
+  detailLeftY = drawDetailBlock(doc.companyBankLabel, joinLines(doc.companyBankLines) || "—", margin, y);
+  detailRightY = drawDetailBlock("Notes", doc.notes || "—", rightColumnX, y);
+  y = Math.max(detailLeftY, detailRightY) + 10;
+
+  if (doc.taxRegistration.trim()) {
+    y = ensurePageSpace(pdf, layout, y, 40);
+    y = drawDetailBlock("Tax registration", doc.taxRegistration, margin, y) + 8;
+  }
+
+  for (const field of doc.customFields) {
+    y = ensurePageSpace(pdf, layout, y, 36);
+    y = drawDetailBlock(field.label, field.value, margin, y) + 8;
+  }
 
   if (doc.footer.trim()) {
+    const footerY = layout.pageHeight - 36;
+    pdf.setFont("helvetica", "normal");
     pdf.setFontSize(9);
     pdf.setTextColor(107, 125, 132);
-    pdf.text(doc.footer, pageWidth / 2, pdf.internal.pageSize.getHeight() - 28, { align: "center", maxWidth: contentWidth });
+    const footerLines = pdf.splitTextToSize(doc.footer, contentWidth);
+    pdf.text(footerLines, pageWidth / 2, footerY, { align: "center" });
   }
 
   return pdf.output("arraybuffer");
