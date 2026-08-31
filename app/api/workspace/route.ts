@@ -3,6 +3,8 @@ import { changePassword, clearUserPassword, createPlatformUserId, getSessionIden
 import { canViewAuditLog, logAudit } from "../../lib/audit";
 import { buildFinancialSummary } from "../../lib/financial-summary";
 import { database as vercelDatabase } from "../../lib/database";
+import { ensureDataDirs } from "../../lib/paths";
+import { clearBusinessData } from "../../lib/clear-business-data";
 
 type Payload = Record<string, unknown> & { action?: string };
 export type Actor = {
@@ -183,6 +185,7 @@ export function database() {
 }
 
 export async function prepareDatabase() {
+  await ensureDataDirs();
   const db = database();
   await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
   const clientColumns=await db.prepare("PRAGMA table_info(clients)").all();
@@ -212,37 +215,6 @@ export async function prepareDatabase() {
   const templateAdditions=["header_text TEXT NOT NULL DEFAULT ''","header_image_url TEXT NOT NULL DEFAULT ''","footer_image_url TEXT NOT NULL DEFAULT ''"];
   for(const addition of templateAdditions){const name=addition.split(" ")[0];if(!templateColumnNames.has(name))await db.prepare(`ALTER TABLE invoice_templates ADD COLUMN ${addition}`).run();}
   await db.batch([db.prepare("CREATE INDEX IF NOT EXISTS idx_orders_supplier_id ON orders(supplier_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_documents_order_id ON documents(order_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_invoices_order_id ON invoices(order_id)"),db.prepare("CREATE INDEX IF NOT EXISTS idx_invoice_templates_active ON invoice_templates(is_active,direction)")]);
-  const row = await db.prepare("SELECT COUNT(*) AS count FROM clients").first<{ count: number }>();
-  if (Number(row?.count ?? 0) > 0) return;
-  await db.batch([
-    db.prepare("INSERT INTO clients (id,name,email,phone,address,country,currency,bank_name,bank_reference,kind) VALUES (1,'Northstar Retail','accounts@northstar.example','+1 415 555 0182','215 Market Street, San Francisco, CA','United States','USD','First Pacific Bank','•••• 2218','customer')"),
-    db.prepare("INSERT INTO clients (id,name,email,phone,address,country,currency,bank_name,bank_reference,kind) VALUES (2,'Atlas Components','finance@atlas.example','+49 30 901820','Rosenstrasse 14, Berlin','Germany','EUR','Deutsche Handelsbank','•••• 8401','both')"),
-    db.prepare("INSERT INTO clients (id,name,email,phone,address,country,currency,bank_name,bank_reference,kind) VALUES (3,'Evergreen Studio','hello@evergreen.example','+44 20 7946 0181','18 Clerkenwell Road, London','United Kingdom','GBP','Westminster Bank','•••• 1094','customer')"),
-    db.prepare("INSERT INTO clients (id,name,email,phone,address,country,currency,bank_name,bank_reference,kind) VALUES (4,'Meridian Foods','ops@meridian.example','+971 4 555 0174','JLT Cluster M, Dubai','United Arab Emirates','USD','Emirates Commercial','•••• 7720','both')"),
-    db.prepare("INSERT INTO bank_accounts (id,nickname,bank_name,currency,account_last4,balance,is_default) VALUES (1,'USD Operations','Mercury','USD','4821',82450,1)"),
-    db.prepare("INSERT INTO bank_accounts (id,nickname,bank_name,currency,account_last4,balance,is_default) VALUES (2,'EUR Collections','Wise Business','EUR','0934',28400,0)"),
-    db.prepare("INSERT INTO bank_accounts (id,nickname,bank_name,currency,account_last4,balance,is_default) VALUES (3,'GBP Reserve','Barclays','GBP','6712',16090,0)"),
-    db.prepare("INSERT INTO orders (id,order_no,client_id,description,amount,currency,status,expected_date) VALUES (1,'ORD-2061',2,'Precision component batch',8920,'EUR','In production','2026-09-14')"),
-    db.prepare("INSERT INTO orders (id,order_no,client_id,description,amount,currency,status,expected_date) VALUES (2,'ORD-2062',4,'Private-label food shipment',16750,'USD','Ready to ship','2026-09-03')"),
-    db.prepare("INSERT INTO orders (id,order_no,client_id,description,amount,currency,status,expected_date) VALUES (3,'ORD-2063',1,'Autumn retail display set',12480,'USD','Confirmed','2026-09-21')"),
-    db.prepare("INSERT INTO shipments (shipment_no,order_id,carrier,tracking_no,status,eta) VALUES ('SHP-0832',2,'DHL Global','DHL-99402170','In transit','2026-09-04')"),
-    db.prepare("INSERT INTO invoices (id,invoice_no,client_id,bank_account_id,order_id,direction,issue_date,due_date,currency,subtotal,total,status,notes) VALUES (1,'INV-1048',1,1,3,'sale','2026-08-21','2026-09-20','USD',12480,12480,'Sent','Payment due within 30 days')"),
-    db.prepare("INSERT INTO invoices (id,invoice_no,client_id,bank_account_id,order_id,direction,issue_date,due_date,currency,subtotal,total,status,notes) VALUES (2,'INV-1047',3,3,NULL,'sale','2026-08-10','2026-08-24','GBP',4600,4600,'Paid','Thank you for your business')"),
-    db.prepare("INSERT INTO invoices (id,invoice_no,client_id,bank_account_id,order_id,direction,issue_date,due_date,currency,subtotal,total,status,notes) VALUES (3,'BILL-0312',4,1,2,'purchase','2026-08-18','2026-09-05','USD',9840,9840,'Sent','Supplier deposit')"),
-    db.prepare("INSERT INTO invoice_items (invoice_id,description,quantity,unit_price) VALUES (1,'Autumn retail display set',1,12480)"),
-    db.prepare("INSERT INTO invoice_items (invoice_id,description,quantity,unit_price) VALUES (2,'Brand identity package',1,4600)"),
-    db.prepare("INSERT INTO invoice_items (invoice_id,description,quantity,unit_price) VALUES (3,'Supplier deposit',1,9840)"),
-    db.prepare("INSERT INTO payments (invoice_id,client_id,bank_account_id,direction,amount,payment_date,reference) VALUES (2,3,3,'in',4600,'2026-08-22','BANK-7742')"),
-    db.prepare("INSERT INTO journal_entries (id,entry_date,reference_type,reference_id,memo) VALUES (1,'2026-08-21','invoice',1,'Sale to Northstar Retail')"),
-    db.prepare("INSERT INTO journal_entries (id,entry_date,reference_type,reference_id,memo) VALUES (2,'2026-08-22','payment',1,'Payment from Evergreen Studio')"),
-    db.prepare("INSERT INTO journal_entries (id,entry_date,reference_type,reference_id,memo) VALUES (3,'2026-08-18','bill',3,'Purchase from Meridian Foods')"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (1,'1100','Accounts receivable',12480,0,1)"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (1,'4000','Sales invoices',0,12480,1)"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (2,'1000','Bank accounts',4600,0,3)"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (2,'1100','Accounts receivable',0,4600,3)"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (3,'5000','Purchase bills',9840,0,4)"),
-    db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (3,'2000','Accounts payable',0,9840,4)"),
-  ]);
 }
 
 export async function authenticate(request: Request): Promise<Actor> {
@@ -266,11 +238,6 @@ export async function authenticate(request: Request): Promise<Actor> {
       : createPlatformUserId();
   await db.prepare("UPDATE app_users SET platform_user_id=?, status='active', last_seen_at=CURRENT_TIMESTAMP WHERE id=?").bind(nextPlatformUserId, row.id).run();
   if (wasInvited) await db.prepare("INSERT INTO audit_log (user_id,action,entity_type,entity_id,description,details_json) VALUES (?,?,?,?,?,?)").bind(row.id,"activated","user",String(row.id),`${String(row.display_name || identity.displayName)} activated their user seat`,JSON.stringify({email:identity.email,role:row.role})).run();
-  const templateCount=await db.prepare("SELECT COUNT(*) AS count FROM invoice_templates WHERE is_active=1").first<{count:number}>();
-  if(Number(templateCount?.count??0)===0)await db.batch([
-    db.prepare("INSERT INTO invoice_templates (name,direction,number_prefix,title,seller_name,payment_terms,footer,created_by) VALUES ('StableCount Standard Invoice','sale','INV','COMMERCIAL INVOICE','StableCount (OPC) Private Limited','Payment due within 30 days','Thank you for your business',?)").bind(row.id),
-    db.prepare("INSERT INTO invoice_templates (name,direction,number_prefix,title,seller_name,payment_terms,footer,created_by) VALUES ('StableCount Purchase Bill','purchase','BILL','PURCHASE BILL','StableCount (OPC) Private Limited','Payment according to the agreed supplier terms','Recorded by StableCount Acc-books',?)").bind(row.id),
-  ]);
   return actorFromRow(row, identity.email, String(row.display_name || identity.displayName), nextPlatformUserId);
 }
 
@@ -438,7 +405,7 @@ export async function POST(request: Request) {
     const actor = await authenticate(request);
     const payload = await request.json() as Payload;
     const db = database();
-    if (actor.role === "operator" && ["user","user-edit","user-status","user-password-reset","user-password-set","client","client-edit","party-link","party-unlink","client-assign","client-unassign","bank","exchange-rate","delete","invoice-template","invoice-template-edit","invoice-edit"].includes(String(payload.action))) return Response.json({error:"Level 2 operators cannot change protected master, templates, or access data"},{status:403});
+    if (actor.role === "operator" && ["user","user-edit","user-status","user-password-reset","user-password-set","client","client-edit","party-link","party-unlink","client-assign","client-unassign","clear-business-data","bank","exchange-rate","delete","invoice-template","invoice-template-edit","invoice-edit"].includes(String(payload.action))) return Response.json({error:"Level 2 operators cannot change protected master, templates, or access data"},{status:403});
     if(payload.action==="settings"){
       const displayName=String(payload.displayName??"").trim();
       const language=String(payload.language??"en");
@@ -617,7 +584,7 @@ export async function POST(request: Request) {
     } else if (payload.action === "order") {
       const clientId=Number(payload.clientId);
       await assertOperatorClientAccess(db,actor,clientId);
-      const orderNo = await nextPrefixedNumber(db, "orders", "order_no", "ORD-", 2061);
+      const orderNo = await nextPrefixedNumber(db, "orders", "order_no", "ORD-", 1);
       const salePrice=Number(payload.salePrice??0);const purchasePrice=Number(payload.purchasePrice??0);const commission=Number(payload.commissionPercent??0);
       if(!Number.isFinite(commission)||commission<0||commission>100)throw new Error("Commission percentage must be between 0 and 100");
       const order=await db.prepare("INSERT INTO orders (order_no,client_id,supplier_id,description,amount,currency,purchase_price,sale_price,commission_percent,purchase_currency,sale_currency,purchase_invoice_details,sales_invoice_details,status,expected_date) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id").bind(orderNo,Number(payload.clientId),payload.supplierId?Number(payload.supplierId):null,required(payload,"description"),salePrice,String(payload.saleCurrency??"RUB"),purchasePrice,salePrice,commission,String(payload.purchaseCurrency??"RUB"),String(payload.saleCurrency??"RUB"),String(payload.purchaseInvoiceDetails??""),String(payload.salesInvoiceDetails??""),String(payload.status??"Confirmed"),String(payload.expectedDate??"")||null).first<{id:number}>();
@@ -633,7 +600,7 @@ export async function POST(request: Request) {
     } else if (payload.action === "shipment") {
       const order=await db.prepare("SELECT client_id FROM orders WHERE id=?").bind(Number(payload.orderId)).first<{client_id:number}>();if(!order)throw new Error("Choose a valid order");
       await assertOperatorClientAccess(db,actor,Number(order.client_id));
-      const shipmentNo = await nextPrefixedNumber(db, "shipments", "shipment_no", "SHP-", 832);
+      const shipmentNo = await nextPrefixedNumber(db, "shipments", "shipment_no", "SHP-", 1);
       const shipment=await db.prepare("INSERT INTO shipments (shipment_no,order_id,carrier,tracking_no,status,eta) VALUES (?,?,?,?,?,?) RETURNING id").bind(shipmentNo,Number(payload.orderId),required(payload,"carrier"),String(payload.trackingNo??""),String(payload.status??"Preparing"),String(payload.eta??"")||null).first<{id:number}>();
       if(shipment)await audit(actor,"created","shipment",shipment.id,`${actor.displayName} created shipment ${shipmentNo}`,{orderId:payload.orderId,carrier:payload.carrier,trackingNo:payload.trackingNo,status:payload.status});
     } else if(payload.action==="invoice-template"||payload.action==="invoice-template-edit"){
@@ -693,6 +660,11 @@ export async function POST(request: Request) {
         db.prepare("INSERT INTO journal_lines (entry_id,account_code,account_name,debit,credit,client_id) VALUES (?,?,?,?,?,?)").bind(entry.id,"1000","Bank accounts",0,amount,invoice.client_id),
       ]);
       await audit(actor,"recorded","payment",String(invoice.id),`${actor.displayName} recorded ${direction==="in"?"receipt":"payment"} for ${invoice.invoice_no}`,{invoiceId:invoice.id,amount,direction,reference:payload.reference});
+    } else if (payload.action === "clear-business-data") {
+      if (actor.role !== "super_admin") return Response.json({ error: "Only the Super Admin can clear all business data" }, { status: 403 });
+      if (String(payload.confirm ?? "") !== "RESET") throw new Error('Type RESET in the confirmation field to clear all business data');
+      const summary = await clearBusinessData();
+      await audit(actor, "cleared", "workspace", actor.id, `${actor.displayName} cleared all business data for a fresh start`, summary);
     } else throw new Error("Unknown action");
     return Response.json(await snapshot(actor), { status: 201 });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "Unable to save record" }, { status: 400 }); }

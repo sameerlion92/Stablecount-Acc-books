@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { del as blobDel, get as blobGet, put as blobPut } from "@vercel/blob";
+import { getUploadsDir, storageMode } from "./paths";
 
 const LOCAL_PREFIX = "local:";
 
@@ -16,11 +16,11 @@ function blobToken() {
 }
 
 export function usesBlobStorage() {
-  return blobToken().length > 0;
+  return storageMode() === "vercel-blob";
 }
 
 function uploadsRoot() {
-  return path.join(process.cwd(), ".uploads");
+  return getUploadsDir();
 }
 
 function localKeyFromRef(ref: string) {
@@ -68,19 +68,30 @@ async function deleteLocal(ref: string) {
   await rm(localMetaPath(key), { force: true });
 }
 
+async function blobPut(key: string, file: File, contentType: string) {
+  const { put } = await import("@vercel/blob");
+  return put(key, file, { access: "private", addRandomSuffix: false, contentType, token: blobToken() });
+}
+
+async function blobGet(ref: string) {
+  const { get } = await import("@vercel/blob");
+  return get(ref, { access: "private", token: blobToken() });
+}
+
+async function blobDel(ref: string) {
+  const { del } = await import("@vercel/blob");
+  await del(ref, { token: blobToken() });
+}
+
 export async function putObject(key: string, file: File, contentType: string) {
-  if (usesBlobStorage()) {
-    return blobPut(key, file, { access: "private", addRandomSuffix: false, contentType, token: blobToken() });
-  }
+  if (usesBlobStorage()) return blobPut(key, file, contentType);
   return putLocal(key, file, contentType);
 }
 
 export async function getObject(ref: string): Promise<StoredObject | null> {
-  if (ref.startsWith(LOCAL_PREFIX)) {
-    return getLocal(ref);
-  }
+  if (ref.startsWith(LOCAL_PREFIX)) return getLocal(ref);
   if (!usesBlobStorage()) return null;
-  const object = await blobGet(ref, { access: "private", token: blobToken() });
+  const object = await blobGet(ref);
   if (!object) return null;
   return {
     stream: object.stream,
@@ -94,5 +105,5 @@ export async function deleteObject(ref: string) {
     return;
   }
   if (!usesBlobStorage()) return;
-  await blobDel(ref, { token: blobToken() });
+  await blobDel(ref);
 }

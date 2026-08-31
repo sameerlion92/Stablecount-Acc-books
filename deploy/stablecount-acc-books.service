@@ -1,0 +1,17 @@
+[Unit]
+Description=Stablecount Acc-books
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/stablecount-acc-books
+Environment=NODE_ENV=production
+Environment=STABLECOUNT_DATA_DIR=/var/lib/stablecount
+EnvironmentFile=/opt/stablecount-acc-books/.env
+ExecStart=/usr/bin/npm run start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

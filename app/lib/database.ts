@@ -1,4 +1,5 @@
 import { createClient, type Client, type InValue } from "@libsql/client";
+import { resolveDatabaseUrl } from "./paths";
 
 type BoundValue = InValue | undefined;
 
@@ -70,17 +71,12 @@ const globalDatabase = globalThis as typeof globalThis & {
 export function database() {
   if (globalDatabase.stablecountDatabase) return globalDatabase.stablecountDatabase;
 
-  const hostedUrl = process.env.TURSO_DATABASE_URL || process.env.Stable_TURSO_DATABASE_URL;
-  const hostedToken = process.env.TURSO_AUTH_TOKEN || process.env.Stable_TURSO_AUTH_TOKEN;
-  const url = hostedUrl || "file:stablecount.db";
-  if (process.env.VERCEL && !hostedUrl) {
+  const { url, token } = resolveDatabaseUrl();
+  if (process.env.VERCEL && !process.env.DATABASE_URL && !process.env.TURSO_DATABASE_URL && !process.env.Stable_TURSO_DATABASE_URL) {
     throw new Error("TURSO_DATABASE_URL is not configured");
   }
 
-  const client = createClient({
-    url,
-    authToken: hostedToken || undefined,
-  });
+  const client = createClient({ url, authToken: token });
   globalDatabase.stablecountDatabase = new StablecountDatabase(client);
   return globalDatabase.stablecountDatabase;
 }

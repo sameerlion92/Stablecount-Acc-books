@@ -134,7 +134,7 @@ export function buildInvoiceLines(invoiceId:number|null|undefined,items:Array<Re
     if(matched.length)return matched.map((row,index)=>({id:String(row.id??index),description:String(row.description??""),quantity:Number(row.quantity??1),unitPrice:Number(row.unit_price??0)}));
   }
   if(fallback?.item_description||fallback?.item_unit_price){
-    return [{id:"seed",description:String(fallback.item_description??""),quantity:Number(fallback.item_quantity??1),unitPrice:Number(fallback.item_unit_price??0)}];
+    return [{id:"line-1",description:String(fallback.item_description??""),quantity:Number(fallback.item_quantity??1),unitPrice:Number(fallback.item_unit_price??0)}];
   }
-  return [{id:"seed",description:"",quantity:1,unitPrice:0}];
+  return [{id:"line-1",description:"",quantity:1,unitPrice:0}];
 }

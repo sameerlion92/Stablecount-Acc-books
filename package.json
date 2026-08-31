@@ -9,6 +9,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "self-host:setup": "bash scripts/self-host-setup.sh",
+    "reset-workspace": "bash scripts/reset-workspace.sh",
+    "clear-business-data": "node scripts/clear-business-data.mjs",
     "test": "node --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
@@ -21,6 +24,7 @@
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "next": "16.2.6",
+    "nodemailer": "^7.0.6",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "xlsx": "^0.18.5"
@@ -30,6 +34,7 @@
     "@next/eslint-plugin-next": "16.2.6",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
+    "@types/nodemailer": "^6.4.17",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "drizzle-kit": "0.31.10",
